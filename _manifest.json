@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "LowValueTarget.deepseek-anthropic-provider",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "name": "DeepSeek Anthropic Provider",
   "description": "通过 Anthropic SDK 调用 DeepSeek V4，支持思考模式和 DeepSeek Anthropic 联网搜索工具。",
   "author": {
@@ -43,7 +43,7 @@
       "client_type": "deepseek.anthropic",
       "name": "DeepSeek Anthropic Provider",
       "description": "通过 Anthropic SDK 调用 DeepSeek V4，并支持 DeepSeek Anthropic 联网搜索工具。",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ],
   "i18n": {
