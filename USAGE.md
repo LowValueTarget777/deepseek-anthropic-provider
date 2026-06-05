@@ -102,6 +102,8 @@ hard_timeout = 240.0
 
 ## WebUI 配置解释
 
+WebUI 下拉框会显示中文选项；插件实际保存到 `config.toml` 的是稳定内部值，例如 `deepseek-v4-pro`、`enabled`、`high`、`active`。如果你之前用过早期中文配置值，插件加载时会自动迁移为内部值。
+
 ### 基础设置
 
 - 启用插件：关闭后 Provider 不处理模型请求。

@@ -54,12 +54,12 @@ def test_manifest_and_code_register_same_llm_provider() -> None:
     assert module.CLIENT_TYPE == "deepseek.anthropic"
 
 
-def test_config_schema_uses_plain_chinese_selects() -> None:
+def test_config_schema_uses_internal_select_values_with_chinese_labels() -> None:
     module = load_plugin_module()
     schema = module.DeepSeekAnthropicProviderPlugin.build_config_schema(
         plugin_id="LowValueTarget.deepseek-anthropic-provider",
         plugin_name="DeepSeek Anthropic Provider",
-        plugin_version="0.1.0",
+        plugin_version="0.1.1",
         plugin_description="测试",
         plugin_author="LowValueTarget",
     )
@@ -78,20 +78,41 @@ def test_config_schema_uses_plain_chinese_selects() -> None:
     assert thinking_field["ui_type"] == "select"
     assert effort_field["ui_type"] == "select"
     assert tool_field["ui_type"] == "select"
-    assert model_field["choices"] == [
-        "DeepSeek V4 Pro（更聪明，成本更高）",
-        "DeepSeek V4 Flash（更快，更省钱）",
-        "跟随 MaiBot 模型配置（高级）",
-    ]
-    assert thinking_field["choices"] == ["开启思考", "关闭思考"]
-    assert effort_field["choices"] == ["标准思考 high", "深度思考 max"]
+    assert model_field["choices"] == ["deepseek-v4-pro", "deepseek-v4-flash", "follow_model_config"]
+    assert model_field["choice_labels"] == {
+        "deepseek-v4-pro": "DeepSeek V4 Pro（更聪明，成本更高）",
+        "deepseek-v4-flash": "DeepSeek V4 Flash（更快，更省钱）",
+        "follow_model_config": "跟随 MaiBot 模型配置（高级）",
+    }
+    assert thinking_field["choices"] == ["enabled", "disabled"]
+    assert thinking_field["choice_labels"] == {"enabled": "开启思考", "disabled": "关闭思考"}
+    assert effort_field["choices"] == ["high", "max"]
+    assert effort_field["choice_labels"] == {"high": "标准思考 high", "max": "深度思考 max"}
+    assert tool_field["choice_labels"]["web_search_20260209"] == "新版网页搜索（web_search_20260209）"
+
+
+def test_legacy_chinese_config_values_are_normalized_to_internal_values() -> None:
+    _module, plugin = make_plugin(
+        {
+            "plugin": {"config_version": "0.1.0"},
+            "model": {"model_choice": "DeepSeek V4 Flash（更快，更省钱）"},
+            "thinking": {"thinking_mode": "开启思考", "thinking_effort": "深度思考 max"},
+            "search": {"search_policy": "更积极"},
+        }
+    )
+
+    assert plugin.config.plugin.config_version == "0.1.1"
+    assert plugin.config.model.model_choice == "deepseek-v4-flash"
+    assert plugin.config.thinking.thinking_mode == "enabled"
+    assert plugin.config.thinking.thinking_effort == "max"
+    assert plugin.config.search.search_policy == "active"
 
 
 def test_build_request_preserves_system_and_adds_thinking_and_search() -> None:
     module, plugin = make_plugin(
         {
-            "model": {"model_choice": "DeepSeek V4 Flash（更快，更省钱）"},
-            "thinking": {"thinking_mode": "开启思考", "thinking_effort": "深度思考 max"},
+            "model": {"model_choice": "deepseek-v4-flash"},
+            "thinking": {"thinking_mode": "enabled", "thinking_effort": "max"},
             "search": {"enabled": True, "web_search_tool": "web_search_20260209", "max_uses": 4},
         }
     )

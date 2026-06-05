@@ -12,34 +12,73 @@ from maibot_sdk import Command, Field, LLMProvider, MaiBotPlugin, PluginConfigBa
 import os
 
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 CLIENT_TYPE = "deepseek.anthropic"
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 
-MODEL_PRO = "DeepSeek V4 Pro（更聪明，成本更高）"
-MODEL_FLASH = "DeepSeek V4 Flash（更快，更省钱）"
-MODEL_FOLLOW = "跟随 MaiBot 模型配置（高级）"
+MODEL_PRO = "deepseek-v4-pro"
+MODEL_FLASH = "deepseek-v4-flash"
+MODEL_FOLLOW = "follow_model_config"
 MODEL_ID_BY_CHOICE = {
-    MODEL_PRO: "deepseek-v4-pro",
-    MODEL_FLASH: "deepseek-v4-flash",
+    MODEL_PRO: MODEL_PRO,
+    MODEL_FLASH: MODEL_FLASH,
+}
+MODEL_CHOICE_LABELS = {
+    MODEL_PRO: "DeepSeek V4 Pro（更聪明，成本更高）",
+    MODEL_FLASH: "DeepSeek V4 Flash（更快，更省钱）",
+    MODEL_FOLLOW: "跟随 MaiBot 模型配置（高级）",
 }
 
-THINKING_ENABLED = "开启思考"
-THINKING_DISABLED = "关闭思考"
-EFFORT_HIGH = "标准思考 high"
-EFFORT_MAX = "深度思考 max"
+THINKING_ENABLED = "enabled"
+THINKING_DISABLED = "disabled"
+THINKING_CHOICE_LABELS = {
+    THINKING_ENABLED: "开启思考",
+    THINKING_DISABLED: "关闭思考",
+}
+
+EFFORT_HIGH = "high"
+EFFORT_MAX = "max"
 EFFORT_BY_CHOICE = {
-    EFFORT_HIGH: "high",
-    EFFORT_MAX: "max",
+    EFFORT_HIGH: EFFORT_HIGH,
+    EFFORT_MAX: EFFORT_MAX,
+}
+EFFORT_CHOICE_LABELS = {
+    EFFORT_HIGH: "标准思考 high",
+    EFFORT_MAX: "深度思考 max",
 }
 
-SEARCH_POLICY_ACTIVE = "更积极"
-SEARCH_POLICY_BALANCED = "按需搜索"
-SEARCH_POLICY_EXPLICIT = "仅显式请求"
+WEB_SEARCH_TOOL_20260209 = "web_search_20260209"
+WEB_SEARCH_TOOL_20250305 = "web_search_20250305"
+WEB_SEARCH_TOOL_LABELS = {
+    WEB_SEARCH_TOOL_20260209: "新版网页搜索（web_search_20260209）",
+    WEB_SEARCH_TOOL_20250305: "旧版网页搜索（web_search_20250305）",
+}
+
+SEARCH_POLICY_ACTIVE = "active"
+SEARCH_POLICY_BALANCED = "balanced"
+SEARCH_POLICY_EXPLICIT = "explicit"
+SEARCH_POLICY_CHOICE_LABELS = {
+    SEARCH_POLICY_ACTIVE: "更积极",
+    SEARCH_POLICY_BALANCED: "按需搜索",
+    SEARCH_POLICY_EXPLICIT: "仅显式请求",
+}
 SEARCH_POLICY_TEXT = {
     SEARCH_POLICY_ACTIVE: "默认更积极：只要问题可能依赖近期或外部事实，就优先联网搜索。",
     SEARCH_POLICY_BALANCED: "默认按需搜索：近期信息、变化较快的事实或用户明确要求时联网搜索。",
     SEARCH_POLICY_EXPLICIT: "默认克制搜索：只有用户明确要求联网、查询、最新信息时才搜索。",
+}
+CHOICE_LABELS_BY_FIELD = {
+    ("model", "model_choice"): MODEL_CHOICE_LABELS,
+    ("thinking", "thinking_mode"): THINKING_CHOICE_LABELS,
+    ("thinking", "thinking_effort"): EFFORT_CHOICE_LABELS,
+    ("search", "web_search_tool"): WEB_SEARCH_TOOL_LABELS,
+    ("search", "search_policy"): SEARCH_POLICY_CHOICE_LABELS,
+}
+LEGACY_CHINESE_VALUE_MAPS = {
+    ("model", "model_choice"): {label: value for value, label in MODEL_CHOICE_LABELS.items()},
+    ("thinking", "thinking_mode"): {label: value for value, label in THINKING_CHOICE_LABELS.items()},
+    ("thinking", "thinking_effort"): {label: value for value, label in EFFORT_CHOICE_LABELS.items()},
+    ("search", "search_policy"): {label: value for value, label in SEARCH_POLICY_CHOICE_LABELS.items()},
 }
 
 
@@ -136,8 +175,8 @@ class SearchConfig(PluginConfigBase):
         description="开启后，模型可以按需要调用 DeepSeek Anthropic 的网页搜索工具。",
         json_schema_extra={"label": "允许模型联网搜索", "x-widget": "switch"},
     )
-    web_search_tool: Literal["web_search_20260209", "web_search_20250305"] = Field(
-        default="web_search_20260209",
+    web_search_tool: Literal[WEB_SEARCH_TOOL_20260209, WEB_SEARCH_TOOL_20250305] = Field(
+        default=WEB_SEARCH_TOOL_20260209,
         description="DeepSeek 支持的 Anthropic 网页搜索工具版本。",
         json_schema_extra={"label": "搜索工具版本", "x-widget": "select"},
     )
@@ -202,6 +241,61 @@ def _get_value(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _deep_copy_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _deep_copy_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_deep_copy_value(item) for item in value]
+    return value
+
+
+def _normalize_legacy_choice_values(config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+    """把早期中文配置值迁移为稳定的内部值。"""
+
+    normalized_config = _deep_copy_value(config_data) if isinstance(config_data, Mapping) else {}
+    if not isinstance(normalized_config, dict):
+        return {}, False
+
+    changed = False
+    plugin_section = normalized_config.get("plugin")
+    current_version = str(plugin_section.get("config_version") or "").strip() if isinstance(plugin_section, dict) else ""
+    if isinstance(plugin_section, dict) and current_version in {"", "0.1.0"}:
+        plugin_section["config_version"] = PLUGIN_VERSION
+        changed = True
+
+    for (section_name, field_name), value_map in LEGACY_CHINESE_VALUE_MAPS.items():
+        section_data = normalized_config.get(section_name)
+        if not isinstance(section_data, dict):
+            continue
+
+        current_value = section_data.get(field_name)
+        replacement = value_map.get(current_value)
+        if replacement is not None and replacement != current_value:
+            section_data[field_name] = replacement
+            changed = True
+
+    return normalized_config, changed
+
+
+def _add_choice_labels(schema: dict[str, Any]) -> dict[str, Any]:
+    sections = schema.get("sections")
+    if not isinstance(sections, dict):
+        return schema
+
+    for (section_name, field_name), labels in CHOICE_LABELS_BY_FIELD.items():
+        section_schema = sections.get(section_name)
+        if not isinstance(section_schema, dict):
+            continue
+        fields = section_schema.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        field_schema = fields.get(field_name)
+        if isinstance(field_schema, dict):
+            field_schema["choice_labels"] = dict(labels)
+
+    return schema
 
 
 def _extract_text_from_part(part: Mapping[str, Any]) -> str:
@@ -519,6 +613,30 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
     """通过 Anthropic SDK 调用 DeepSeek 的 LLM Provider。"""
 
     config_model = DeepSeekAnthropicProviderConfig
+
+    @classmethod
+    def build_config_schema(
+        cls,
+        *,
+        plugin_id: str = "",
+        plugin_name: str = "",
+        plugin_version: str = "",
+        plugin_description: str = "",
+        plugin_author: str = "",
+    ) -> dict[str, Any]:
+        schema = super().build_config_schema(
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            plugin_description=plugin_description,
+            plugin_author=plugin_author,
+        )
+        return _add_choice_labels(schema)
+
+    def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+        normalized_input, legacy_changed = _normalize_legacy_choice_values(config_data)
+        normalized_config, changed = super().normalize_plugin_config(normalized_input)
+        return normalized_config, changed or legacy_changed
 
     async def on_load(self) -> None:
         self.ctx.logger.info("DeepSeek Anthropic Provider 已加载，client_type=%s", CLIENT_TYPE)
