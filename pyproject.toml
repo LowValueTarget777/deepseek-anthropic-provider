@@ -1,7 +1,7 @@
 [project]
 name = "deepseek-anthropic-provider"
-version = "0.1.1"
-description = "MaiBot LLM Provider plugin for DeepSeek Anthropic-compatible API"
+version = "0.2.0"
+description = "MaiBot Tool plugin for DeepSeek Anthropic-compatible API"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.104.0,<1.0.0",
@@ -11,7 +11,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

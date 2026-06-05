@@ -12,3 +12,5 @@ build/
 .env
 .env.*
 !.env.example
+PLAN.MD
+config.toml

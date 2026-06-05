@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "LowValueTarget.deepseek-anthropic-provider",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "name": "DeepSeek Anthropic Provider",
-  "description": "通过 Anthropic SDK 调用 DeepSeek V4，支持思考模式和 DeepSeek Anthropic 联网搜索工具。",
+  "description": "将 DeepSeek Anthropic API 包装为 MaiBot Tool，让 Bot 可以按需调用联网搜索、网页读取和深度推理能力。",
   "author": {
     "name": "LowValueTarget",
     "url": "https://github.com/LowValueTarget777"
@@ -36,15 +36,8 @@
     }
   ],
   "capabilities": [
+    "tool",
     "send.text"
-  ],
-  "llm_providers": [
-    {
-      "client_type": "deepseek.anthropic",
-      "name": "DeepSeek Anthropic Provider",
-      "description": "通过 Anthropic SDK 调用 DeepSeek V4，并支持 DeepSeek Anthropic 联网搜索工具。",
-      "version": "0.1.1"
-    }
   ],
   "i18n": {
     "default_locale": "zh-CN",
