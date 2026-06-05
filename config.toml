@@ -1,0 +1,28 @@
+[plugin]
+enabled = true
+config_version = "0.1.0"
+
+[auth]
+# 可选。留空时读取环境变量，再读取 MaiBot 模型供应商配置里的密钥。
+api_key = ""
+api_key_env = "DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com/anthropic"
+key_source_help = "优先级：插件密钥 > 环境变量 DEEPSEEK_API_KEY > MaiBot 模型供应商密钥。"
+
+[model]
+model_choice = "DeepSeek V4 Pro（更聪明，成本更高）"
+
+[thinking]
+thinking_mode = "开启思考"
+thinking_effort = "标准思考 high"
+
+[search]
+enabled = true
+web_search_tool = "web_search_20260209"
+max_uses = 5
+search_policy = "更积极"
+
+[debug]
+log_search_sources = true
+log_raw_summary = false
+enable_test_commands = true
