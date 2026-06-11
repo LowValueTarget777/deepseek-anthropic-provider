@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "LowValueTarget.deepseek-anthropic-provider",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "name": "DeepSeek Anthropic Provider",
   "description": "将 DeepSeek Anthropic API 包装为 MaiBot Tool，让 Bot 可以按需调用联网搜索、网页读取和深度推理能力。",
   "author": {

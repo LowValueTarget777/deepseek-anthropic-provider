@@ -5,15 +5,15 @@
 插件本身不做爬虫、不 parse HTML——只做管道。
 """
 
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
+import copy
+import os
 
 from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
-import os
 
-
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.2.1"
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 
 MODEL_PRO = "deepseek-v4-pro"
@@ -27,6 +27,20 @@ MODEL_CHOICE_LABELS = {
     MODEL_FLASH: "DeepSeek V4 Flash（更快，更省钱）",
 }
 
+THINKING_ENABLED = "enabled"
+THINKING_DISABLED = "disabled"
+THINKING_CHOICE_LABELS = {
+    THINKING_ENABLED: "开启思考",
+    THINKING_DISABLED: "关闭思考",
+}
+
+EFFORT_HIGH = "high"
+EFFORT_MAX = "max"
+EFFORT_CHOICE_LABELS = {
+    EFFORT_HIGH: "标准思考",
+    EFFORT_MAX: "深度思考",
+}
+
 WEB_SEARCH_TOOL_20260209 = "web_search_20260209"
 WEB_SEARCH_TOOL_20250305 = "web_search_20250305"
 WEB_SEARCH_TOOL_LABELS = {
@@ -34,9 +48,40 @@ WEB_SEARCH_TOOL_LABELS = {
     WEB_SEARCH_TOOL_20250305: "旧版网页搜索（web_search_20250305）",
 }
 
+SEARCH_POLICY_ACTIVE = "active"
+SEARCH_POLICY_BALANCED = "balanced"
+SEARCH_POLICY_EXPLICIT = "explicit"
+SEARCH_POLICY_CHOICE_LABELS = {
+    SEARCH_POLICY_ACTIVE: "更积极",
+    SEARCH_POLICY_BALANCED: "按需搜索",
+    SEARCH_POLICY_EXPLICIT: "仅显式请求",
+}
+SEARCH_POLICY_TEXT = {
+    SEARCH_POLICY_ACTIVE: "只要任务可能依赖近期或外部事实，就优先使用联网搜索。",
+    SEARCH_POLICY_BALANCED: "仅在信息可能变化、需要核实或任务明确要求时使用联网搜索。",
+    SEARCH_POLICY_EXPLICIT: "只有任务明确要求联网、搜索、查询最新信息或读取网页时才使用联网搜索。",
+}
+
 CHOICE_LABELS_BY_FIELD = {
-    ("model_tool", "model_choice"): MODEL_CHOICE_LABELS,
-    ("model_tool", "web_search_tool"): WEB_SEARCH_TOOL_LABELS,
+    ("model", "model_choice"): MODEL_CHOICE_LABELS,
+    ("thinking", "thinking_mode"): THINKING_CHOICE_LABELS,
+    ("thinking", "thinking_effort"): EFFORT_CHOICE_LABELS,
+    ("search", "web_search_tool"): WEB_SEARCH_TOOL_LABELS,
+    ("search", "search_policy"): SEARCH_POLICY_CHOICE_LABELS,
+}
+LEGACY_CHOICE_VALUE_MAPS = {
+    ("model", "model_choice"): {
+        **{label: value for value, label in MODEL_CHOICE_LABELS.items()},
+        "跟随 MaiBot 模型配置（高级）": MODEL_PRO,
+        "follow_model_config": MODEL_PRO,
+    },
+    ("thinking", "thinking_mode"): {label: value for value, label in THINKING_CHOICE_LABELS.items()},
+    ("thinking", "thinking_effort"): {
+        **{label: value for value, label in EFFORT_CHOICE_LABELS.items()},
+        "标准思考 high": EFFORT_HIGH,
+        "深度思考 max": EFFORT_MAX,
+    },
+    ("search", "search_policy"): {label: value for value, label in SEARCH_POLICY_CHOICE_LABELS.items()},
 }
 
 
@@ -80,17 +125,50 @@ class AuthConfig(PluginConfigBase):
     )
 
 
-class ModelToolConfig(PluginConfigBase):
-    """模型与工具设置。"""
+class ModelConfig(PluginConfigBase):
+    """模型设置。"""
 
-    __ui_label__ = "模型与工具"
+    __ui_label__ = "模型设置"
     __ui_icon__ = "brain-circuit"
     __ui_order__ = 2
 
     model_choice: Literal[MODEL_PRO, MODEL_FLASH] = Field(
-        default=MODEL_PRO,
+        default=MODEL_FLASH,
         description="选择调用 DeepSeek Anthropic 接口时使用的模型。",
         json_schema_extra={"label": "模型", "x-widget": "select"},
+    )
+
+
+class ThinkingConfig(PluginConfigBase):
+    """思考设置。"""
+
+    __ui_label__ = "思考设置"
+    __ui_icon__ = "brain"
+    __ui_order__ = 3
+
+    thinking_mode: Literal[THINKING_ENABLED, THINKING_DISABLED] = Field(
+        default=THINKING_ENABLED,
+        description="开启后模型会先思考再回答；关闭后回复更快、更省输出。",
+        json_schema_extra={"label": "思考模式", "x-widget": "select"},
+    )
+    thinking_effort: Literal[EFFORT_HIGH, EFFORT_MAX] = Field(
+        default=EFFORT_HIGH,
+        description="仅在开启思考时生效。深度思考更深入，也更慢、更贵。",
+        json_schema_extra={"label": "思考深度", "x-widget": "select"},
+    )
+
+
+class SearchConfig(PluginConfigBase):
+    """联网搜索设置。"""
+
+    __ui_label__ = "联网搜索"
+    __ui_icon__ = "search"
+    __ui_order__ = 4
+
+    enabled: bool = Field(
+        default=True,
+        description="控制插件内部的 DeepSeek 是否可以使用网页搜索，不影响 MaiBot 主模型是否调用插件。",
+        json_schema_extra={"label": "允许联网搜索", "x-widget": "switch"},
     )
     web_search_tool: Literal[WEB_SEARCH_TOOL_20260209, WEB_SEARCH_TOOL_20250305] = Field(
         default=WEB_SEARCH_TOOL_20260209,
@@ -103,6 +181,11 @@ class ModelToolConfig(PluginConfigBase):
         description="每轮搜索最多允许调用几次。越大越聪明，但更慢、更贵。",
         json_schema_extra={"label": "每轮最多搜索次数", "x-widget": "input"},
     )
+    search_policy: Literal[SEARCH_POLICY_ACTIVE, SEARCH_POLICY_BALANCED, SEARCH_POLICY_EXPLICIT] = Field(
+        default=SEARCH_POLICY_BALANCED,
+        description="控制通用 DeepSeek 代理在什么情况下使用联网搜索。",
+        json_schema_extra={"label": "搜索积极程度", "x-widget": "select"},
+    )
 
 
 class DebugConfig(PluginConfigBase):
@@ -110,11 +193,11 @@ class DebugConfig(PluginConfigBase):
 
     __ui_label__ = "调试与日志"
     __ui_icon__ = "bug"
-    __ui_order__ = 3
+    __ui_order__ = 5
 
     log_search_sources: bool = Field(
         default=True,
-        description="搜索来源只写入日志和 raw_data，不主动发给聊天用户。",
+        description="搜索来源只写入日志，不主动发给聊天用户。",
         json_schema_extra={"label": "记录搜索来源", "x-widget": "switch"},
     )
     log_raw_summary: bool = Field(
@@ -134,7 +217,9 @@ class DeepSeekAnthropicProviderConfig(PluginConfigBase):
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
-    model_tool: ModelToolConfig = Field(default_factory=ModelToolConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
 
 
@@ -161,6 +246,51 @@ def _add_choice_labels(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
+def _normalize_legacy_config(config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+    """迁移旧分组、旧字段名和旧中文选项值。"""
+
+    normalized = copy.deepcopy(dict(config_data)) if isinstance(config_data, Mapping) else {}
+    changed = False
+
+    plugin_section = normalized.setdefault("plugin", {})
+    if not isinstance(plugin_section, dict):
+        plugin_section = {}
+        normalized["plugin"] = plugin_section
+        changed = True
+    if plugin_section.get("config_version") != PLUGIN_VERSION:
+        plugin_section["config_version"] = PLUGIN_VERSION
+        changed = True
+
+    legacy_model_tool = normalized.pop("model_tool", None)
+    if isinstance(legacy_model_tool, dict):
+        model_section = normalized.setdefault("model", {})
+        search_section = normalized.setdefault("search", {})
+        if isinstance(model_section, dict) and "model_choice" in legacy_model_tool:
+            model_section["model_choice"] = legacy_model_tool["model_choice"]
+        if isinstance(search_section, dict):
+            if "web_search_tool" in legacy_model_tool:
+                search_section["web_search_tool"] = legacy_model_tool["web_search_tool"]
+            if "max_search_uses" in legacy_model_tool:
+                search_section["max_search_uses"] = legacy_model_tool["max_search_uses"]
+        changed = True
+
+    search_section = normalized.get("search")
+    if isinstance(search_section, dict) and "max_uses" in search_section:
+        search_section["max_search_uses"] = search_section.pop("max_uses")
+        changed = True
+
+    for (section_name, field_name), value_map in LEGACY_CHOICE_VALUE_MAPS.items():
+        section = normalized.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        current_value = section.get(field_name)
+        if isinstance(current_value, str) and current_value in value_map:
+            section[field_name] = value_map[current_value]
+            changed = True
+
+    return normalized, changed
+
+
 def _resolve_api_key(config: DeepSeekAnthropicProviderConfig) -> str:
     """按优先级读取 API Key。"""
 
@@ -183,19 +313,32 @@ def _resolve_base_url(config: DeepSeekAnthropicProviderConfig) -> str:
 
 
 def _resolve_model(config: DeepSeekAnthropicProviderConfig) -> str:
-    return MODEL_ID_BY_CHOICE.get(config.model_tool.model_choice, MODEL_PRO)
+    return MODEL_ID_BY_CHOICE.get(config.model.model_choice, MODEL_FLASH)
 
 
 def _build_web_search_tools(config: DeepSeekAnthropicProviderConfig, max_uses: int | None = None) -> list[dict[str, Any]]:
     """构造 DeepSeek Anthropic server web search 工具参数。"""
 
+    if not config.search.enabled:
+        return []
+
     return [
         {
-            "type": config.model_tool.web_search_tool,
+            "type": config.search.web_search_tool,
             "name": "web_search",
-            "max_uses": int(max_uses if max_uses is not None else config.model_tool.max_search_uses),
+            "max_uses": int(max_uses if max_uses is not None else config.search.max_search_uses),
         }
     ]
+
+
+def _build_proxy_system_prompt(config: DeepSeekAnthropicProviderConfig) -> str:
+    """构造通用代理提示词，并说明插件内部的联网搜索策略。"""
+
+    system = "你是通过 MaiBot Tool 调用的 DeepSeek 助手。任务：通用推理。"
+    if config.search.enabled:
+        policy = SEARCH_POLICY_TEXT[config.search.search_policy]
+        system = f"{system}\n【联网搜索策略】{policy}"
+    return system
 
 
 def _block_to_dict(block: Any) -> dict[str, Any]:
@@ -259,6 +402,11 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         )
         return _add_choice_labels(schema)
 
+    def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+        normalized_input, legacy_changed = _normalize_legacy_config(config_data)
+        normalized_config, changed = super().normalize_plugin_config(normalized_input)
+        return normalized_config, changed or legacy_changed
+
     # ---- 生命周期 ----
 
     async def on_load(self) -> None:
@@ -300,6 +448,11 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
             "max_tokens": 4096,
             "messages": [{"role": "user", "content": user_prompt}],
         }
+        if self.config.thinking.thinking_mode == THINKING_ENABLED:
+            request_body["thinking"] = {"type": THINKING_ENABLED}
+            request_body["output_config"] = {"effort": self.config.thinking.thinking_effort}
+        else:
+            request_body["thinking"] = {"type": THINKING_DISABLED}
         if system:
             request_body["system"] = system
         if tools:
@@ -363,6 +516,8 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         del kwargs
         if not query.strip():
             return {"name": "search_and_summarize", "content": "请提供搜索查询词。"}
+        if not self.config.search.enabled:
+            return {"name": "search_and_summarize", "content": "联网搜索已在插件配置中关闭。"}
 
         tools = _build_web_search_tools(self.config)
 
@@ -394,6 +549,8 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         del kwargs
         if not url.strip():
             return {"name": "fetch_page", "content": "请提供要读取的网页 URL。"}
+        if not self.config.search.enabled:
+            return {"name": "fetch_page", "content": "联网搜索已在插件配置中关闭，无法读取网页。"}
 
         reason = f"（读取原因：{explanation}）" if explanation.strip() else ""
         system = "你是通过 MaiBot Tool 调用的 DeepSeek 助手。任务：读取指定网页内容并呈现。"
@@ -429,11 +586,12 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
             return {"name": "deepseek_proxy", "content": "请提供要处理的 prompt。"}
 
         reason = f"\n（调用原因：{explanation}）" if explanation.strip() else ""
-        system = "你是通过 MaiBot Tool 调用的 DeepSeek 助手。任务：通用推理。"
+        system = _build_proxy_system_prompt(self.config)
         user_prompt = f"{prompt}{reason}"
+        tools = _build_web_search_tools(self.config) or None
 
         try:
-            result = await self._call_deepseek(user_prompt=user_prompt, system=system)
+            result = await self._call_deepseek(user_prompt=user_prompt, system=system, tools=tools)
         except Exception as exc:
             return {"name": "deepseek_proxy", "content": f"DeepSeek 处理失败：{exc}"}
 
@@ -471,6 +629,8 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
     async def handle_search_test(self, stream_id: str = "", **kwargs: Any):
         if not self.config.debug.enable_test_commands:
             return False, "测试命令已在插件配置中关闭", True
+        if not self.config.search.enabled:
+            return False, "联网搜索已在插件配置中关闭", True
         text = str(kwargs.get("text") or "").strip()
         query = text.removeprefix("/deepseek_anthropic_search_test").strip() or "DeepSeek 最新消息"
 

@@ -1,6 +1,6 @@
 [project]
 name = "deepseek-anthropic-provider"
-version = "0.2.0"
+version = "0.2.1"
 description = "MaiBot Tool plugin for DeepSeek Anthropic-compatible API"
 requires-python = ">=3.11"
 dependencies = [

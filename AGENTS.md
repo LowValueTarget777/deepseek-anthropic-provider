@@ -24,7 +24,8 @@
 - 插件只做管道：把 Bot 通过 Tool 传来的参数转为 Anthropic 请求发 DeepSeek，把结果还回去。不在插件里写爬虫、不调 requests、不 parse HTML。
 - DeepSeek Anthropic 兼容接口支持文本和 server web search；不要把图片或文档二进制直接发送。
 - 搜索来源默认只写日志，不主动附到聊天回复末尾。
-- 不传 `thinking.type` / `output_config`（让模型自己决定是否思考）。
+- 根据插件配置传递 `thinking.type` 与 `output_config.effort`；关闭思考时不传 `output_config`。
+- 搜索策略只控制插件内部 DeepSeek 使用 server web search 的倾向，不应描述为控制 MaiBot 主模型是否调用插件。
 
 参考文档：
 

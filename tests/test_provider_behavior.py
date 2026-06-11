@@ -1,4 +1,4 @@
-"""DeepSeek Anthropic Provider 插件测试（v0.2.0 Tool 模式）。"""
+"""DeepSeek Anthropic Provider 插件测试（v0.2.1 Tool 模式）。"""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,7 +60,7 @@ def test_manifest_has_no_llm_providers() -> None:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     assert "llm_providers" not in manifest
     assert manifest["id"] == "LowValueTarget.deepseek-anthropic-provider"
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.2.1"
     assert "tool" in manifest["capabilities"]
     assert "i18n" in manifest
     assert manifest["i18n"]["default_locale"] == "zh-CN"
@@ -92,18 +92,91 @@ def test_config_schema_uses_select_labels() -> None:
     schema = module.DeepSeekAnthropicProviderPlugin.build_config_schema(
         plugin_id="LowValueTarget.deepseek-anthropic-provider",
         plugin_name="DeepSeek Anthropic Provider",
-        plugin_version="0.2.0",
+        plugin_version="0.2.1",
         plugin_description="测试",
         plugin_author="LowValueTarget",
     )
     sections = schema["sections"]
-    assert sections["model_tool"]["title"] == "模型与工具"
+    assert sections["model"]["title"] == "模型设置"
+    assert sections["thinking"]["title"] == "思考设置"
+    assert sections["search"]["title"] == "联网搜索"
     assert sections["auth"]["title"] == "密钥设置"
 
-    model_field = sections["model_tool"]["fields"]["model_choice"]
+    model_field = sections["model"]["fields"]["model_choice"]
+    thinking_field = sections["thinking"]["fields"]["thinking_mode"]
+    effort_field = sections["thinking"]["fields"]["thinking_effort"]
+    tool_field = sections["search"]["fields"]["web_search_tool"]
+    policy_field = sections["search"]["fields"]["search_policy"]
+
     assert model_field["ui_type"] == "select"
-    assert model_field["choice_labels"]["deepseek-v4-pro"] == "DeepSeek V4 Pro（更聪明，成本更高）"
-    assert model_field["choice_labels"]["deepseek-v4-flash"] == "DeepSeek V4 Flash（更快，更省钱）"
+    assert model_field["default"] == "deepseek-v4-flash"
+    assert model_field["choice_labels"] == {
+        "deepseek-v4-pro": "DeepSeek V4 Pro（更聪明，成本更高）",
+        "deepseek-v4-flash": "DeepSeek V4 Flash（更快，更省钱）",
+    }
+    assert thinking_field["ui_type"] == "select"
+    assert thinking_field["choice_labels"] == {"enabled": "开启思考", "disabled": "关闭思考"}
+    assert effort_field["ui_type"] == "select"
+    assert effort_field["choice_labels"] == {"high": "标准思考", "max": "深度思考"}
+    assert tool_field["ui_type"] == "select"
+    assert policy_field["ui_type"] == "select"
+    assert policy_field["default"] == "balanced"
+    assert policy_field["choice_labels"] == {
+        "active": "更积极",
+        "balanced": "按需搜索",
+        "explicit": "仅显式请求",
+    }
+
+
+def test_legacy_model_tool_config_is_normalized() -> None:
+    """0.2.0 的 model_tool 配置应迁移到新分组并保留选择。"""
+    module = load_plugin_module()
+    plugin = module.create_plugin()
+    normalized, changed = plugin.normalize_plugin_config(
+        {
+            "plugin": {"enabled": True, "config_version": "0.2.0"},
+            "model": {"model_choice": "deepseek-v4-flash"},
+            "search": {
+                "enabled": True,
+                "web_search_tool": "web_search_20260209",
+                "max_search_uses": 5,
+                "search_policy": "balanced",
+            },
+            "model_tool": {
+                "model_choice": "deepseek-v4-pro",
+                "web_search_tool": "web_search_20250305",
+                "max_search_uses": 3,
+            },
+        }
+    )
+
+    assert changed is True
+    assert normalized["plugin"]["config_version"] == "0.2.1"
+    assert normalized["model"]["model_choice"] == "deepseek-v4-pro"
+    assert normalized["search"]["web_search_tool"] == "web_search_20250305"
+    assert normalized["search"]["max_search_uses"] == 3
+    assert "model_tool" not in normalized
+
+
+def test_legacy_choice_values_and_fields_are_normalized() -> None:
+    """旧中文值、follow_model_config 和 max_uses 应迁移为稳定内部值。"""
+    module = load_plugin_module()
+    plugin = module.create_plugin()
+    normalized, changed = plugin.normalize_plugin_config(
+        {
+            "plugin": {"enabled": True, "config_version": "0.1.1"},
+            "model": {"model_choice": "跟随 MaiBot 模型配置（高级）"},
+            "thinking": {"thinking_mode": "关闭思考", "thinking_effort": "深度思考 max"},
+            "search": {"enabled": True, "max_uses": 2, "search_policy": "更积极"},
+        }
+    )
+
+    assert changed is True
+    assert normalized["model"]["model_choice"] == "deepseek-v4-pro"
+    assert normalized["thinking"] == {"thinking_mode": "disabled", "thinking_effort": "max"}
+    assert normalized["search"]["max_search_uses"] == 2
+    assert normalized["search"]["search_policy"] == "active"
+    assert "max_uses" not in normalized["search"]
 
 
 # ================================================================
@@ -208,12 +281,14 @@ async def test_call_deepseek_passes_correct_params_to_anthropic() -> None:
 
     assert result == "回复内容"
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["model"] == "deepseek-v4-pro"
+    assert call_kwargs["model"] == "deepseek-v4-flash"
     assert call_kwargs["system"] == "你是助手"
     assert call_kwargs["max_tokens"] == 4096
     assert call_kwargs["messages"] == [{"role": "user", "content": "测试"}]
     assert len(call_kwargs["tools"]) == 1
     assert call_kwargs["tools"][0]["name"] == "web_search"
+    assert call_kwargs["thinking"] == {"type": "enabled"}
+    assert call_kwargs["output_config"] == {"effort": "high"}
 
 
 async def test_call_deepseek_without_tools() -> None:
@@ -239,11 +314,37 @@ async def test_call_deepseek_without_tools() -> None:
     assert "tools" not in call_kwargs
 
 
+async def test_call_deepseek_passes_disabled_thinking_without_effort() -> None:
+    """关闭思考时只传 disabled，不应传 output_config。"""
+    _module, plugin = make_plugin(
+        {
+            "auth": {"api_key": "sk-test"},
+            "thinking": {"thinking_mode": "disabled", "thinking_effort": "max"},
+        }
+    )
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="快速回复", citations=[])],
+        usage=SimpleNamespace(input_tokens=2, output_tokens=3),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        await plugin._call_deepseek("你好")
+
+    call_kwargs = mock_client.messages.create.call_args.kwargs
+    assert call_kwargs["thinking"] == {"type": "disabled"}
+    assert "output_config" not in call_kwargs
+
+
 async def test_call_deepseek_uses_configured_model() -> None:
     """应使用配置里选择的模型。"""
     _module, plugin = make_plugin({
         "auth": {"api_key": "sk-test"},
-        "model_tool": {"model_choice": "deepseek-v4-flash"},
+        "model": {"model_choice": "deepseek-v4-flash"},
     })
 
     mock_response = SimpleNamespace(
@@ -315,7 +416,7 @@ async def test_fetch_page_uses_web_search_tool() -> None:
     _module, plugin = make_plugin(
         {
             "auth": {"api_key": "sk-test"},
-            "model_tool": {"web_search_tool": "web_search_20260209", "max_search_uses": 4},
+            "search": {"web_search_tool": "web_search_20260209", "max_search_uses": 4},
         }
     )
 
@@ -325,6 +426,61 @@ async def test_fetch_page_uses_web_search_tool() -> None:
     assert result == {"name": "fetch_page", "content": "页面摘要"}
     call_kwargs = mock_call.call_args.kwargs
     assert call_kwargs["tools"] == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 4}]
+
+
+async def test_search_tools_return_clear_message_when_search_disabled() -> None:
+    """关闭联网后，两个联网工具不应调用 DeepSeek。"""
+    _module, plugin = make_plugin({"search": {"enabled": False}})
+
+    with patch.object(plugin, "_call_deepseek", new=AsyncMock()) as mock_call:
+        search_result = await plugin.handle_search_and_summarize(query="最新消息")
+        page_result = await plugin.handle_fetch_page(url="https://example.com")
+
+    assert "联网搜索已在插件配置中关闭" in search_result["content"]
+    assert "联网搜索已在插件配置中关闭" in page_result["content"]
+    mock_call.assert_not_awaited()
+
+
+async def test_deepseek_proxy_uses_search_policy_and_tools_when_enabled() -> None:
+    """通用代理开启搜索后应传入搜索工具和对应策略提示。"""
+    _module, plugin = make_plugin({"search": {"enabled": True, "search_policy": "explicit"}})
+
+    with patch.object(plugin, "_call_deepseek", new=AsyncMock(return_value="代理回复")) as mock_call:
+        await plugin.handle_deepseek_proxy(prompt="分析这个问题")
+
+    call_kwargs = mock_call.call_args.kwargs
+    assert call_kwargs["tools"][0]["name"] == "web_search"
+    assert "只有任务明确要求联网" in call_kwargs["system"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_text"),
+    [
+        ("active", "优先使用联网搜索"),
+        ("balanced", "信息可能变化、需要核实"),
+        ("explicit", "只有任务明确要求联网"),
+    ],
+)
+async def test_deepseek_proxy_uses_each_search_policy(policy: str, expected_text: str) -> None:
+    """通用代理应把三种搜索策略转换为对应中文提示。"""
+    _module, plugin = make_plugin({"search": {"enabled": True, "search_policy": policy}})
+
+    with patch.object(plugin, "_call_deepseek", new=AsyncMock(return_value="代理回复")) as mock_call:
+        await plugin.handle_deepseek_proxy(prompt="分析这个问题")
+
+    assert expected_text in mock_call.call_args.kwargs["system"]
+
+
+async def test_deepseek_proxy_has_no_search_tool_when_disabled() -> None:
+    """通用代理关闭搜索后不应传入搜索工具。"""
+    _module, plugin = make_plugin({"search": {"enabled": False}})
+
+    with patch.object(plugin, "_call_deepseek", new=AsyncMock(return_value="代理回复")) as mock_call:
+        await plugin.handle_deepseek_proxy(prompt="分析这个问题")
+
+    call_kwargs = mock_call.call_args.kwargs
+    assert call_kwargs["tools"] is None
+    assert "联网搜索策略" not in call_kwargs["system"]
 
 
 # ================================================================

@@ -33,7 +33,7 @@ plugins/deepseek-anthropic-provider/
 优先使用 `uv`：
 
 ```powershell
-cd D:\code\maibot-plugin\MaiBot\plugins\deepseek-anthropic-provider
+cd plugins/deepseek-anthropic-provider
 uv sync
 ```
 
@@ -66,13 +66,30 @@ $env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 
 - DeepSeek API 密钥：可留空，留空时读取环境变量。
 - 环境变量名：默认 `DEEPSEEK_API_KEY`。
-- 接口地址：默认 `https://api.deepseek.com/anthropic`。
 
-### 模型与工具
+接口地址固定为 `https://api.deepseek.com/anthropic`，不在 WebUI 中提供修改项。
+
+### 模型设置
 
 - 模型：选择调用 DeepSeek 时使用的模型（V4 Pro / V4 Flash）。
+
+默认使用 V4 Flash，适合日常使用并控制成本。
+
+### 思考设置
+
+- 思考模式：选择开启思考或关闭思考。
+- 思考深度：开启思考时可选择标准思考 `high` 或深度思考 `max`。
+
+开启思考时，插件会向 DeepSeek Anthropic API 传递 `thinking.type = enabled` 和对应的 `output_config.effort`；关闭思考时只传递 `thinking.type = disabled`。
+
+### 联网搜索
+
+- 允许联网搜索：关闭后 `search_and_summarize` 和 `fetch_page` 不可用，`deepseek_proxy` 也不会获得搜索工具。
 - 搜索工具版本：默认 `web_search_20260209`，也可切到 `web_search_20250305` 做兼容测试。
 - 每轮最多搜索次数：插件传给 DeepSeek 的 server tool `max_uses`，默认 5。
+- 搜索积极程度：控制通用代理在什么情况下使用搜索，可选择更积极、按需搜索、仅显式请求。
+
+搜索积极程度只影响插件内部 DeepSeek 使用 server web search 的倾向，不能决定 MaiBot 主模型是否调用本插件。搜索和网页读取工具被调用时会直接联网，不受积极程度限制。
 
 ### 调试与日志
 
@@ -82,8 +99,9 @@ $env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 
 ## 推荐组合
 
-- 聪明 + 能搜：V4 Pro + `web_search_20260209` + max_uses 5
-- 省钱 + 快速：V4 Flash + `web_search_20260209` + max_uses 3
+- 默认均衡：V4 Flash + 开启思考 + 标准思考 + 按需搜索
+- 复杂分析：V4 Pro + 开启思考 + 深度思考 + 更积极
+- 最低成本：V4 Flash + 关闭思考 + 仅显式请求
 
 ## 测试命令
 
@@ -120,3 +138,5 @@ DeepSeek Anthropic 兼容接口不支持直接传图片或文档。插件只传�
 ### 搜索没有发生
 
 用 `/deepseek_anthropic_search_test 关键词` 验证连通性和搜索工具版本。
+
+同时确认 WebUI 中的“允许联网搜索”已经开启。通用代理是否主动搜索还会受到“搜索积极程度”的影响。

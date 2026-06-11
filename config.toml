@@ -1,15 +1,23 @@
 [plugin]
 enabled = true
-config_version = "0.2.0"
+config_version = "0.2.1"
 
 [auth]
 api_key = ""
 api_key_env = "DEEPSEEK_API_KEY"
 
-[model_tool]
+[model]
 model_choice = "deepseek-v4-flash"
+
+[thinking]
+thinking_mode = "enabled"
+thinking_effort = "high"
+
+[search]
+enabled = true
 web_search_tool = "web_search_20260209"
 max_search_uses = 5
+search_policy = "balanced"
 
 [debug]
 log_search_sources = true

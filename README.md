@@ -9,7 +9,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | 插件 ID | `LowValueTarget.deepseek-anthropic-provider` |
-| 当前版本 | `0.2.0` |
+| 当前版本 | `0.2.1` |
 | 插件类型 | Tool 插件 |
 | 支持能力 | `tool`、`send.text` |
 | 主要依赖 | `anthropic>=0.104.0,<1.0.0`、`maibot-plugin-sdk>=2.0.0` |
@@ -62,20 +62,23 @@ uv sync
 | 基础设置 | 启用插件 | 控制插件是否生效。 |
 | 密钥设置 | DeepSeek API 密钥 | 可以直接填写，也可以留空后使用环境变量。 |
 | 密钥设置 | 环境变量名 | 默认读取 `DEEPSEEK_API_KEY`。 |
-| 模型设置 | 模型选择 | 可选择 DeepSeek V4 Pro、DeepSeek V4 Flash，或跟随配置。 |
+| 模型设置 | 模型选择 | 可选择 DeepSeek V4 Pro 或 DeepSeek V4 Flash。 |
 | 思考设置 | 思考模式 | 控制是否开启 DeepSeek 思考能力。 |
 | 思考设置 | 思考深度 | 可选择标准思考或深度思考。 |
+| 联网搜索 | 允许联网搜索 | 关闭后搜索和网页读取工具不可用，通用代理也不会获得搜索工具。 |
 | 联网搜索 | 搜索工具版本 | 可选择 DeepSeek 支持的 Web Search 工具版本。 |
-| 联网搜索 | 搜索积极程度 | 控制插件在搜索时的主动程度。 |
+| 联网搜索 | 每轮最多搜索次数 | 控制 DeepSeek 每轮最多调用几次网页搜索。 |
+| 联网搜索 | 搜索积极程度 | 控制通用 DeepSeek 代理在什么情况下使用搜索。 |
 | 调试与日志 | 调试开关 | 用于记录搜索来源、响应摘要和测试信息。 |
 
 密钥读取优先级：
 
 1. 插件 WebUI 中填写的 DeepSeek API 密钥。
 2. 环境变量 `DEEPSEEK_API_KEY`。
-3. MaiBot 模型供应商配置中的密钥。
 
 不要把真实 API 密钥提交到 Git 仓库或公开截图中。
+
+搜索积极程度只影响插件内部 DeepSeek 使用 server web search 的倾向，不会控制 MaiBot 主模型是否调用本插件。
 
 ## 使用方式
 
@@ -103,7 +106,7 @@ uv sync
 /deepseek_anthropic_ping
 ```
 
-检查 API 密钥、接口地址和模型是否可用。
+检查 API 密钥、固定接口地址和当前模型是否可用。
 
 ```text
 /deepseek_anthropic_search_test 关键词
@@ -115,12 +118,12 @@ uv sync
 
 | 使用目标 | 推荐模型 | 思考模式 | 搜索积极程度 |
 | --- | --- | --- | --- |
-| 日常聊天增强 | DeepSeek V4 Flash | 关闭思考 | 标准 |
+| 日常聊天增强 | DeepSeek V4 Flash | 开启思考 | 按需搜索 |
 | 查询最新资料 | DeepSeek V4 Flash | 开启思考 | 更积极 |
 | 复杂分析任务 | DeepSeek V4 Pro | 开启思考 | 更积极 |
-| 成本优先 | DeepSeek V4 Flash | 关闭思考 | 保守 |
+| 成本优先 | DeepSeek V4 Flash | 关闭思考 | 仅显式请求 |
 
-如果不确定怎么选，建议先使用默认配置：DeepSeek V4 Pro、开启思考、标准思考、搜索更积极。
+如果不确定怎么选，建议使用默认配置：DeepSeek V4 Flash、开启思考、标准思考、按需搜索。
 
 ## 常见问题
 
@@ -138,7 +141,7 @@ uv sync
 
 ### 搜索来源会发到聊天里吗
 
-默认不会。搜索来源主要写入日志和原始数据，避免在聊天回复末尾追加过长的引用内容。
+默认不会。搜索来源主要写入日志，避免在聊天回复末尾追加过长的引用内容。
 
 ### 会影响 MaiBot 的人格和记忆吗
 
