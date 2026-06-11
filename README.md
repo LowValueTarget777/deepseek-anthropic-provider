@@ -9,10 +9,10 @@
 | 项目 | 内容 |
 | --- | --- |
 | 插件 ID | `LowValueTarget.deepseek-anthropic-provider` |
-| 当前版本 | `0.2.1` |
+| 当前版本 | `0.2.3` |
 | 插件类型 | Tool 插件 |
 | 支持能力 | `tool`、`send.text` |
-| 主要依赖 | `anthropic>=0.104.0,<1.0.0`、`maibot-plugin-sdk>=2.0.0` |
+| 主要依赖 | `anthropic>=0.104.0,<1.0.0`、`maibot-plugin-sdk>=2.0.0,<3.0.0` |
 | 默认接口 | `https://api.deepseek.com/anthropic` |
 
 ## 主要功能
@@ -63,6 +63,7 @@ uv sync
 | 密钥设置 | DeepSeek API 密钥 | 可以直接填写，也可以留空后使用环境变量。 |
 | 密钥设置 | 环境变量名 | 默认读取 `DEEPSEEK_API_KEY`。 |
 | 模型设置 | 模型选择 | 可选择 DeepSeek V4 Pro 或 DeepSeek V4 Flash。 |
+| 模型设置 | 最大输出长度 | 默认 `4096`；深度思考或长总结被截断时可以调高。 |
 | 思考设置 | 思考模式 | 控制是否开启 DeepSeek 思考能力。 |
 | 思考设置 | 思考深度 | 可选择标准思考或深度思考。 |
 | 联网搜索 | 允许联网搜索 | 关闭后搜索和网页读取工具不可用，通用代理也不会获得搜索工具。 |
@@ -79,6 +80,8 @@ uv sync
 不要把真实 API 密钥提交到 Git 仓库或公开截图中。
 
 搜索积极程度只影响插件内部 DeepSeek 使用 server web search 的倾向，不会控制 MaiBot 主模型是否调用本插件。
+
+每次请求携带网页搜索工具时，插件会自动告诉 DeepSeek 服务器当前的具体时间、时区名称和 UTC 偏移。模型会以此判断“今天”“最新”“近期”“今年”等相对时间，并核对搜索结果发布日期；纯推理请求和连接测试不会注入时间。
 
 ## 使用方式
 
@@ -114,6 +117,8 @@ uv sync
 
 检查当前联网搜索工具版本是否可用，并在日志中记录工具调用情况。
 
+默认使用 `web_search_20260209`。不同 DeepSeek 账号支持情况可能不同，插件不会自动切换搜索工具版本，请在正式使用前运行一次搜索测试命令。
+
 ## 推荐设置
 
 | 使用目标 | 推荐模型 | 思考模式 | 搜索积极程度 |
@@ -139,6 +144,18 @@ uv sync
 
 请先运行 `/deepseek_anthropic_search_test 关键词`。如果仍然失败，可能是当前 DeepSeek 账号、模型或工具版本暂不支持对应的 Web Search server tool。
 
+### 提示输出达到最大长度
+
+在 WebUI 的“模型设置”中调高“最大输出长度”。数值越大，单次请求可能产生的输出费用也越高。
+
+### 错误信息为什么没有原始 API 响应
+
+插件会向聊天用户显示通俗中文错误，并把完整异常写入日志，避免把服务端响应、请求细节或敏感信息直接发到聊天中。
+
+### 网页读取支持哪些地址
+
+`fetch_page` 只接受有效的 `http://` 或 `https://` 网页地址。它依赖 DeepSeek Web Search server tool，不是通用爬虫，无法保证读取需要登录、反爬限制严格或账号搜索能力不支持的网页。
+
 ### 搜索来源会发到聊天里吗
 
 默认不会。搜索来源主要写入日志，避免在聊天回复末尾追加过长的引用内容。
@@ -156,5 +173,6 @@ uv sync
 ## 更多文档
 
 - [完整使用教程](./USAGE.md)
+- [版本变更记录](./CHANGELOG.md)
 - [DeepSeek Anthropic API 文档](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)
 - [MaiBot 插件市场提交说明](https://github.com/Mai-with-u/plugin-repo/blob/main/CONTRIBUTING.md)

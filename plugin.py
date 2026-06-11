@@ -5,7 +5,9 @@
 插件本身不做爬虫、不 parse HTML——只做管道。
 """
 
+from datetime import datetime
 from typing import Any, Literal, Mapping
+from urllib.parse import urlparse
 import copy
 import os
 
@@ -13,7 +15,7 @@ from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 
-PLUGIN_VERSION = "0.2.1"
+PLUGIN_VERSION = "0.2.3"
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 
 MODEL_PRO = "deepseek-v4-pro"
@@ -84,6 +86,41 @@ LEGACY_CHOICE_VALUE_MAPS = {
     ("search", "search_policy"): {label: value for value, label in SEARCH_POLICY_CHOICE_LABELS.items()},
 }
 
+SEARCH_ERROR_MESSAGES = {
+    "max_uses_exceeded": "已达到每轮最多搜索次数。",
+    "unavailable": "搜索服务暂时不可用。",
+    "too_many_requests": "搜索请求过于频繁。",
+    "query_too_long": "搜索关键词过长。",
+    "request_too_large": "搜索请求内容过大。",
+    "invalid_tool_input": "搜索工具参数无效。",
+}
+
+
+class DeepSeekRequestError(RuntimeError):
+    """可以安全展示给聊天用户的 DeepSeek 请求错误。"""
+
+    @classmethod
+    def from_exception(cls, exc: Exception) -> "DeepSeekRequestError":
+        exception_name = type(exc).__name__
+        if exception_name == "APITimeoutError":
+            return cls("连接 DeepSeek 超时，请稍后再试。")
+        if exception_name == "APIConnectionError":
+            return cls("无法连接 DeepSeek，请检查网络后重试。")
+
+        status_messages = {
+            400: "DeepSeek 请求格式错误，请检查插件配置。",
+            401: "DeepSeek API 密钥无效或没有权限。",
+            402: "DeepSeek 账户余额不足。",
+            422: "DeepSeek 请求参数无效，请检查模型和工具配置。",
+            429: "DeepSeek 请求过于频繁，请稍后再试。",
+            500: "DeepSeek 服务暂时异常，请稍后再试。",
+            503: "DeepSeek 服务繁忙，请稍后再试。",
+        }
+        status_code = getattr(exc, "status_code", None)
+        if status_code in status_messages:
+            return cls(status_messages[status_code])
+        return cls("DeepSeek 调用失败，请查看插件日志。")
+
 
 # ========== 配置 ==========
 
@@ -97,12 +134,21 @@ class PluginSectionConfig(PluginConfigBase):
     enabled: bool = Field(
         default=True,
         description="关闭后，插件所有 Tool 和命令均不可用。",
-        json_schema_extra={"label": "启用插件", "x-widget": "switch"},
+        json_schema_extra={
+            "label": "启用插件",
+            "hint": "关闭后，联网搜索、网页读取、通用代理和测试命令都不可用。",
+            "x-widget": "switch",
+        },
     )
     config_version: str = Field(
         default=PLUGIN_VERSION,
         description="配置文件版本，通常不需要手动修改。",
-        json_schema_extra={"label": "配置版本", "x-widget": "input", "advanced": True},
+        json_schema_extra={
+            "label": "配置版本",
+            "hint": "由插件自动维护。",
+            "x-widget": "input",
+            "hidden": True,
+        },
     )
 
 
@@ -116,12 +162,20 @@ class AuthConfig(PluginConfigBase):
     api_key: str = Field(
         default="",
         description="可选。填写后优先使用这里的密钥；留空时读取环境变量。",
-        json_schema_extra={"label": "DeepSeek API 密钥", "x-widget": "password"},
+        json_schema_extra={
+            "label": "DeepSeek API 密钥",
+            "hint": "优先使用这里填写的密钥；留空时读取下方环境变量。",
+            "x-widget": "password",
+        },
     )
     api_key_env: str = Field(
         default="DEEPSEEK_API_KEY",
         description="插件配置里没有密钥时，会从这个环境变量读取。",
-        json_schema_extra={"label": "环境变量名", "x-widget": "input"},
+        json_schema_extra={
+            "label": "环境变量名",
+            "hint": "推荐保留默认的 DEEPSEEK_API_KEY，避免把密钥直接写进配置文件。",
+            "x-widget": "input",
+        },
     )
 
 
@@ -135,7 +189,22 @@ class ModelConfig(PluginConfigBase):
     model_choice: Literal[MODEL_PRO, MODEL_FLASH] = Field(
         default=MODEL_FLASH,
         description="选择调用 DeepSeek Anthropic 接口时使用的模型。",
-        json_schema_extra={"label": "模型", "x-widget": "select"},
+        json_schema_extra={
+            "label": "模型",
+            "hint": "Flash 更快更省，Pro 更适合复杂推理和高质量总结。",
+            "x-widget": "select",
+        },
+    )
+    max_tokens: int = Field(
+        default=4096,
+        ge=1024,
+        le=32768,
+        description="单次调用允许 DeepSeek 输出的最大长度。",
+        json_schema_extra={
+            "label": "最大输出长度",
+            "hint": "深度思考或长总结被截断时可以调高；数值越大，潜在费用越高。",
+            "x-widget": "input",
+        },
     )
 
 
@@ -149,12 +218,20 @@ class ThinkingConfig(PluginConfigBase):
     thinking_mode: Literal[THINKING_ENABLED, THINKING_DISABLED] = Field(
         default=THINKING_ENABLED,
         description="开启后模型会先思考再回答；关闭后回复更快、更省输出。",
-        json_schema_extra={"label": "思考模式", "x-widget": "select"},
+        json_schema_extra={
+            "label": "思考模式",
+            "hint": "开启后更适合复杂任务；关闭后响应更快，且不发送思考深度参数。",
+            "x-widget": "select",
+        },
     )
     thinking_effort: Literal[EFFORT_HIGH, EFFORT_MAX] = Field(
         default=EFFORT_HIGH,
         description="仅在开启思考时生效。深度思考更深入，也更慢、更贵。",
-        json_schema_extra={"label": "思考深度", "x-widget": "select"},
+        json_schema_extra={
+            "label": "思考深度",
+            "hint": "仅在开启思考时生效；深度思考更慢，通常也会消耗更多输出。",
+            "x-widget": "select",
+        },
     )
 
 
@@ -168,23 +245,39 @@ class SearchConfig(PluginConfigBase):
     enabled: bool = Field(
         default=True,
         description="控制插件内部的 DeepSeek 是否可以使用网页搜索，不影响 MaiBot 主模型是否调用插件。",
-        json_schema_extra={"label": "允许联网搜索", "x-widget": "switch"},
+        json_schema_extra={
+            "label": "允许联网搜索",
+            "hint": "只控制插件内部的 DeepSeek 搜索能力，不控制 MaiBot 主模型是否调用本插件。",
+            "x-widget": "switch",
+        },
     )
     web_search_tool: Literal[WEB_SEARCH_TOOL_20260209, WEB_SEARCH_TOOL_20250305] = Field(
         default=WEB_SEARCH_TOOL_20260209,
         description="DeepSeek 支持的 Anthropic 网页搜索工具版本。",
-        json_schema_extra={"label": "搜索工具版本", "x-widget": "select"},
+        json_schema_extra={
+            "label": "搜索工具版本",
+            "hint": "默认使用新版工具；不同账号支持情况可能不同，请用搜索测试命令验证。",
+            "x-widget": "select",
+        },
     )
     max_search_uses: int = Field(
         default=5,
         ge=1,
         description="每轮搜索最多允许调用几次。越大越聪明，但更慢、更贵。",
-        json_schema_extra={"label": "每轮最多搜索次数", "x-widget": "input"},
+        json_schema_extra={
+            "label": "每轮最多搜索次数",
+            "hint": "限制单次 DeepSeek 调用中的搜索次数，避免耗时和费用失控。",
+            "x-widget": "input",
+        },
     )
     search_policy: Literal[SEARCH_POLICY_ACTIVE, SEARCH_POLICY_BALANCED, SEARCH_POLICY_EXPLICIT] = Field(
         default=SEARCH_POLICY_BALANCED,
         description="控制通用 DeepSeek 代理在什么情况下使用联网搜索。",
-        json_schema_extra={"label": "搜索积极程度", "x-widget": "select"},
+        json_schema_extra={
+            "label": "搜索积极程度",
+            "hint": "只影响通用代理内部是否主动搜索；联网搜索和网页读取工具始终会搜索。",
+            "x-widget": "select",
+        },
     )
 
 
@@ -198,17 +291,30 @@ class DebugConfig(PluginConfigBase):
     log_search_sources: bool = Field(
         default=True,
         description="搜索来源只写入日志，不主动发给聊天用户。",
-        json_schema_extra={"label": "记录搜索来源", "x-widget": "switch"},
+        json_schema_extra={
+            "label": "记录搜索来源",
+            "hint": "将搜索结果 URL 写入日志，方便核实答案来源；不会追加到聊天回复。",
+            "x-widget": "switch",
+        },
     )
     log_raw_summary: bool = Field(
         default=False,
         description="开启后会记录简短原始响应摘要，排查问题时再打开。",
-        json_schema_extra={"label": "记录原始响应摘要", "x-widget": "switch", "advanced": True},
+        json_schema_extra={
+            "label": "记录原始响应摘要",
+            "hint": "仅记录模型、停止原因和 token 数，不记录完整回答。",
+            "x-widget": "switch",
+            "advanced": True,
+        },
     )
     enable_test_commands: bool = Field(
         default=True,
         description="开启后可使用 /deepseek_anthropic_ping 和 /deepseek_anthropic_search_test。",
-        json_schema_extra={"label": "启用测试命令", "x-widget": "switch"},
+        json_schema_extra={
+            "label": "启用测试命令",
+            "hint": "允许在聊天中测试模型连通性和当前搜索工具版本。",
+            "x-widget": "switch",
+        },
     )
 
 
@@ -246,6 +352,28 @@ def _add_choice_labels(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
+def _version_parts(version: str) -> tuple[int, ...] | None:
+    """将纯数字点分版本转换为可比较元组。"""
+
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except (AttributeError, ValueError):
+        return None
+
+
+def _is_future_config_version(config_data: Mapping[str, Any] | None) -> bool:
+    """判断配置是否来自高于当前插件的版本。"""
+
+    if not isinstance(config_data, Mapping):
+        return False
+    plugin_section = config_data.get("plugin")
+    if not isinstance(plugin_section, Mapping):
+        return False
+    config_version = _version_parts(plugin_section.get("config_version", ""))
+    plugin_version = _version_parts(PLUGIN_VERSION)
+    return config_version is not None and plugin_version is not None and config_version > plugin_version
+
+
 def _normalize_legacy_config(config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
     """迁移旧分组、旧字段名和旧中文选项值。"""
 
@@ -257,7 +385,7 @@ def _normalize_legacy_config(config_data: Mapping[str, Any] | None) -> tuple[dic
         plugin_section = {}
         normalized["plugin"] = plugin_section
         changed = True
-    if plugin_section.get("config_version") != PLUGIN_VERSION:
+    if plugin_section.get("config_version") != PLUGIN_VERSION and not _is_future_config_version(normalized):
         plugin_section["config_version"] = PLUGIN_VERSION
         changed = True
 
@@ -331,6 +459,33 @@ def _build_web_search_tools(config: DeepSeekAnthropicProviderConfig, max_uses: i
     ]
 
 
+def _has_web_search_tool(tools: list[dict[str, Any]] | None) -> bool:
+    """判断请求是否携带 Anthropic Web Search server tool。"""
+
+    if not tools:
+        return False
+    return any(
+        str(tool.get("name", "") or "").strip() == "web_search"
+        or str(tool.get("type", "") or "").strip().startswith("web_search_")
+        for tool in tools
+    )
+
+
+def _build_search_time_context() -> str:
+    """构造供联网搜索使用的服务器本地时间上下文。"""
+
+    local_time = datetime.now().astimezone()
+    timezone_name = local_time.tzname() or "本地时区"
+    raw_offset = local_time.strftime("%z")
+    utc_offset = f"{raw_offset[:3]}:{raw_offset[3:]}" if len(raw_offset) == 5 else raw_offset
+    formatted_time = local_time.strftime("%Y年%m月%d日 %H:%M:%S")
+    return (
+        f"【当前时间】服务器本地时间是 {formatted_time}（{timezone_name}，UTC{utc_offset}）。"
+        "处理“今天、最新、近期、今年”等相对时间、生成搜索词和筛选搜索结果时，必须以此时间为准；"
+        "请核对搜索结果的发布日期，不要把模型训练数据中的日期当作当前日期。"
+    )
+
+
 def _build_proxy_system_prompt(config: DeepSeekAnthropicProviderConfig) -> str:
     """构造通用代理提示词，并说明插件内部的联网搜索策略。"""
 
@@ -342,38 +497,107 @@ def _build_proxy_system_prompt(config: DeepSeekAnthropicProviderConfig) -> str:
 
 
 def _block_to_dict(block: Any) -> dict[str, Any]:
-    if isinstance(block, dict):
+    """将字典、Anthropic SDK 对象或测试对象转换为普通字典。"""
+
+    if isinstance(block, Mapping):
         return dict(block)
+
+    model_dump = getattr(block, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        if isinstance(dumped, Mapping):
+            return dict(dumped)
+
     result: dict[str, Any] = {}
-    for name in ("type", "text", "citations", "content"):
+    for name in (
+        "type",
+        "text",
+        "citations",
+        "content",
+        "url",
+        "title",
+        "cited_text",
+        "error_code",
+    ):
         value = getattr(block, name, None)
         if value is not None:
             result[name] = value
     return result
 
 
+def _as_block_list(value: Any) -> list[Any]:
+    """把内容字段统一为可遍历的内容块列表。"""
+
+    if value is None or isinstance(value, (str, bytes)):
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _deduplicate_citations(citations: list[dict[str, str]]) -> list[dict[str, str]]:
+    """按 URL 去重并保留首次出现的标题。"""
+
+    result: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for citation in citations:
+        url = citation["url"]
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        result.append(citation)
+    return result
+
+
 def _extract_citations_from_block(block: dict[str, Any]) -> list[dict[str, str]]:
     citations: list[dict[str, str]] = []
 
-    raw_citations = block.get("citations")
-    if isinstance(raw_citations, (list, tuple)) and not isinstance(raw_citations, (str, bytes)):
-        for raw_citation in raw_citations:
-            citation = _block_to_dict(raw_citation)
-            url = str(citation.get("url", "") or "").strip()
-            title = str(citation.get("title", "") or citation.get("cited_text", "") or "").strip()
-            if url:
-                citations.append({"title": title, "url": url})
+    for raw_citation in _as_block_list(block.get("citations")):
+        citation = _block_to_dict(raw_citation)
+        url = str(citation.get("url", "") or "").strip()
+        title = str(citation.get("title", "") or citation.get("cited_text", "") or "").strip()
+        if url:
+            citations.append({"title": title, "url": url})
 
-    raw_content = block.get("content")
-    if isinstance(raw_content, (list, tuple)) and not isinstance(raw_content, (str, bytes)):
-        for raw_item in raw_content:
-            item = _block_to_dict(raw_item)
-            url = str(item.get("url", "") or "").strip()
-            title = str(item.get("title", "") or "").strip()
-            if url:
-                citations.append({"title": title, "url": url})
+    for raw_item in _as_block_list(block.get("content")):
+        item = _block_to_dict(raw_item)
+        url = str(item.get("url", "") or "").strip()
+        title = str(item.get("title", "") or "").strip()
+        if url:
+            citations.append({"title": title, "url": url})
 
-    return citations
+    return _deduplicate_citations(citations)
+
+
+def _extract_search_errors_from_block(block: dict[str, Any]) -> list[str]:
+    """提取 Anthropic web_search_tool_result 中的错误码。"""
+
+    errors: list[str] = []
+    for raw_item in _as_block_list(block.get("content")):
+        item = _block_to_dict(raw_item)
+        error_code = str(item.get("error_code", "") or "").strip()
+        if error_code and error_code not in errors:
+            errors.append(error_code)
+    return errors
+
+
+def _search_error_message(error_code: str) -> str:
+    return SEARCH_ERROR_MESSAGES.get(error_code, f"搜索工具返回错误（{error_code}）。")
+
+
+def _is_valid_web_url(url: str) -> bool:
+    """只接受带主机名的 HTTP/HTTPS URL。"""
+
+    normalized_url = url.strip()
+    if any(character.isspace() for character in normalized_url):
+        return False
+    try:
+        parsed = urlparse(normalized_url)
+        hostname = parsed.hostname
+        _port = parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(hostname)
 
 
 # ========== 插件主体 ==========
@@ -403,6 +627,9 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         return _add_choice_labels(schema)
 
     def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+        if _is_future_config_version(config_data):
+            return copy.deepcopy(dict(config_data)), False
+
         normalized_input, legacy_changed = _normalize_legacy_config(config_data)
         normalized_config, changed = super().normalize_plugin_config(normalized_input)
         return normalized_config, changed or legacy_changed
@@ -421,6 +648,14 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
 
     # ---- 共用后端 ----
 
+    def _format_tool_error(self, prefix: str, exc: Exception) -> str:
+        """将内部异常转换为不会泄露原始响应的用户提示。"""
+
+        if isinstance(exc, DeepSeekRequestError):
+            return f"{prefix}：{exc}"
+        self.ctx.logger.error("%s：%s", prefix, exc, exc_info=True)
+        return f"{prefix}，请查看插件日志。"
+
     async def _call_deepseek(
         self,
         user_prompt: str,
@@ -434,46 +669,53 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         """
 
         if not self.config.plugin.enabled:
-            raise RuntimeError("DeepSeek Anthropic Provider 已在插件配置中关闭")
+            raise DeepSeekRequestError("DeepSeek Anthropic Provider 已在插件配置中关闭")
 
         api_key = _resolve_api_key(self.config)
         if not api_key:
-            raise RuntimeError("缺少 DeepSeek API 密钥，请配置插件密钥或 DEEPSEEK_API_KEY 环境变量")
+            raise DeepSeekRequestError("缺少 DeepSeek API 密钥，请配置插件密钥或 DEEPSEEK_API_KEY 环境变量")
 
         base_url = _resolve_base_url(self.config)
         model = _resolve_model(self.config)
 
         request_body: dict[str, Any] = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": self.config.model.max_tokens,
             "messages": [{"role": "user", "content": user_prompt}],
         }
+        effective_system = system
+        if _has_web_search_tool(tools):
+            search_time_context = _build_search_time_context()
+            effective_system = f"{system}\n\n{search_time_context}" if system else search_time_context
         if self.config.thinking.thinking_mode == THINKING_ENABLED:
             request_body["thinking"] = {"type": THINKING_ENABLED}
             request_body["output_config"] = {"effort": self.config.thinking.thinking_effort}
         else:
             request_body["thinking"] = {"type": THINKING_DISABLED}
-        if system:
-            request_body["system"] = system
+        if effective_system:
+            request_body["system"] = effective_system
         if tools:
             request_body["tools"] = tools
 
         try:
             from anthropic import AsyncAnthropic
         except ImportError as exc:
-            raise RuntimeError("缺少 anthropic 依赖，请先安装插件依赖") from exc
+            raise DeepSeekRequestError("缺少 anthropic 依赖，请先安装插件依赖") from exc
 
         client = AsyncAnthropic(api_key=api_key, base_url=base_url)
         try:
-            response = await client.messages.create(**request_body)
+            try:
+                response = await client.messages.create(**request_body)
+            except Exception as exc:
+                self.ctx.logger.error("DeepSeek Anthropic 请求失败：%s", exc, exc_info=True)
+                raise DeepSeekRequestError.from_exception(exc) from exc
         finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                await close()
+            await client.close()
 
-        # 提取文本和 citations
+        # 提取最终文本、搜索来源和 server tool 错误。
         text_parts: list[str] = []
         citations: list[dict[str, str]] = []
+        search_errors: list[str] = []
         raw_content = getattr(response, "content", [])
 
         if isinstance(raw_content, (list, tuple)) and not isinstance(raw_content, (str, bytes)):
@@ -485,9 +727,18 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                     if isinstance(text, str) and text.strip():
                         text_parts.append(text.strip())
                 citations.extend(_extract_citations_from_block(block))
+                for error_code in _extract_search_errors_from_block(block):
+                    if error_code not in search_errors:
+                        search_errors.append(error_code)
 
+        citations = _deduplicate_citations(citations)
         if self.config.debug.log_search_sources and citations:
             self.ctx.logger.info("DeepSeek Anthropic 搜索来源: %s", citations)
+        if search_errors:
+            self.ctx.logger.warning(
+                "DeepSeek Anthropic 搜索工具错误: %s",
+                [{"code": code, "message": _search_error_message(code)} for code in search_errors],
+            )
         if self.config.debug.log_raw_summary:
             self.ctx.logger.info(
                 "DeepSeek Anthropic 响应摘要: model=%s stop=%s tokens_in=%s tokens_out=%s",
@@ -497,7 +748,14 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 getattr(response.usage, "output_tokens", 0) if hasattr(response, "usage") else 0,
             )
 
-        return "\n\n".join(text_parts).strip() or "（DeepSeek 未返回文本内容）"
+        final_text = "\n\n".join(text_parts).strip()
+        if final_text:
+            return final_text
+        if search_errors:
+            return f"联网搜索失败：{_search_error_message(search_errors[0])}"
+        if str(getattr(response, "stop_reason", "") or "") == "max_tokens":
+            return "DeepSeek 输出达到最大长度，请在插件配置中调高“最大输出长度”。"
+        return "（DeepSeek 未返回文本内容）"
 
     # ================================================================
     # Tool: search_and_summarize
@@ -528,7 +786,7 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         try:
             result = await self._call_deepseek(user_prompt=user_prompt, system=system, tools=tools)
         except Exception as exc:
-            return {"name": "search_and_summarize", "content": f"搜索失败：{exc}"}
+            return {"name": "search_and_summarize", "content": self._format_tool_error("搜索失败", exc)}
 
         return {"name": "search_and_summarize", "content": result}
 
@@ -549,6 +807,8 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         del kwargs
         if not url.strip():
             return {"name": "fetch_page", "content": "请提供要读取的网页 URL。"}
+        if not _is_valid_web_url(url):
+            return {"name": "fetch_page", "content": "请提供有效的 HTTP 或 HTTPS 网页地址。"}
         if not self.config.search.enabled:
             return {"name": "fetch_page", "content": "联网搜索已在插件配置中关闭，无法读取网页。"}
 
@@ -563,7 +823,7 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 tools=_build_web_search_tools(self.config),
             )
         except Exception as exc:
-            return {"name": "fetch_page", "content": f"读取页面失败：{exc}"}
+            return {"name": "fetch_page", "content": self._format_tool_error("读取页面失败", exc)}
 
         return {"name": "fetch_page", "content": result}
 
@@ -593,7 +853,7 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         try:
             result = await self._call_deepseek(user_prompt=user_prompt, system=system, tools=tools)
         except Exception as exc:
-            return {"name": "deepseek_proxy", "content": f"DeepSeek 处理失败：{exc}"}
+            return {"name": "deepseek_proxy", "content": self._format_tool_error("DeepSeek 处理失败", exc)}
 
         return {"name": "deepseek_proxy", "content": result}
 
@@ -616,8 +876,9 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 system="你是 MaiBot 连通性测试助手。",
             )
         except Exception as exc:
-            await self.ctx.send.text(f"DeepSeek Anthropic 连接失败：{exc}", stream_id)
-            return False, str(exc), True
+            error_message = self._format_tool_error("DeepSeek Anthropic 连接失败", exc)
+            await self.ctx.send.text(error_message, stream_id)
+            return False, error_message, True
         await self.ctx.send.text(f"DeepSeek Anthropic 连接正常：{result}", stream_id)
         return True, "DeepSeek Anthropic 连接测试完成", True
 
@@ -642,8 +903,9 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 tools=tools,
             )
         except Exception as exc:
-            await self.ctx.send.text(f"DeepSeek Anthropic 搜索测试失败：{exc}", stream_id)
-            return False, str(exc), True
+            error_message = self._format_tool_error("DeepSeek Anthropic 搜索测试失败", exc)
+            await self.ctx.send.text(error_message, stream_id)
+            return False, error_message, True
         await self.ctx.send.text(f"DeepSeek Anthropic 搜索测试完成。\n{result}", stream_id)
         return True, "DeepSeek Anthropic 搜索测试完成", True
 

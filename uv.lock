@@ -63,7 +63,7 @@ wheels = [
 
 [[package]]
 name = "deepseek-anthropic-provider"
-version = "0.2.1"
+version = "0.2.3"
 source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
@@ -79,7 +79,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.104.0,<1.0.0" },
-    { name = "maibot-plugin-sdk", specifier = ">=2.0.0" },
+    { name = "maibot-plugin-sdk", specifier = ">=2.0.0,<3.0.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -39,7 +39,7 @@ uv sync
 
 插件依赖：
 - `anthropic>=0.104.0,<1.0.0`
-- `maibot-plugin-sdk>=2.0.0`
+- `maibot-plugin-sdk>=2.0.0,<3.0.0`
 
 ## 配置 DeepSeek API Key
 
@@ -72,8 +72,11 @@ $env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 ### 模型设置
 
 - 模型：选择调用 DeepSeek 时使用的模型（V4 Pro / V4 Flash）。
+- 最大输出长度：单次调用允许 DeepSeek 输出的最大长度，默认 `4096`。
 
 默认使用 V4 Flash，适合日常使用并控制成本。
+
+深度思考或长总结没有最终回答，并提示输出达到最大长度时，可以适当调高“最大输出长度”。数值越大，潜在输出费用越高。
 
 ### 思考设置
 
@@ -90,6 +93,10 @@ $env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 - 搜索积极程度：控制通用代理在什么情况下使用搜索，可选择更积极、按需搜索、仅显式请求。
 
 搜索积极程度只影响插件内部 DeepSeek 使用 server web search 的倾向，不能决定 MaiBot 主模型是否调用本插件。搜索和网页读取工具被调用时会直接联网，不受积极程度限制。
+
+插件不会自动回退搜索工具版本。不同 DeepSeek 账号支持情况可能不同，首次安装或切换版本后请运行搜索测试命令。
+
+所有携带 Web Search server tool 的请求都会自动注入 MaiBot 服务器当前的具体时间、时区名称和 UTC 偏移。DeepSeek 会以此处理“今天”“最新”“近期”“今年”等相对时间，并核对搜索结果发布日期。该行为始终开启，不影响无搜索工具的纯推理请求和连接测试。
 
 ### 调试与日志
 
@@ -117,6 +124,14 @@ $env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 /deepseek_anthropic_search_test DeepSeek V4 最新说明
 ```
 
+真实 API 集成测试默认跳过，不会产生费用。开发者确实需要运行时，必须同时设置：
+
+```powershell
+$env:RUN_DEEPSEEK_INTEGRATION="1"
+$env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
+uv run pytest -m integration
+```
+
 ## 常见问题
 
 ### 缺少 DeepSeek API 密钥
@@ -140,3 +155,19 @@ DeepSeek Anthropic 兼容接口不支持直接传图片或文档。插件只传�
 用 `/deepseek_anthropic_search_test 关键词` 验证连通性和搜索工具版本。
 
 同时确认 WebUI 中的“允许联网搜索”已经开启。通用代理是否主动搜索还会受到“搜索积极程度”的影响。
+
+### 搜索工具提示达到使用上限或暂时不可用
+
+`max_uses_exceeded` 表示本轮达到“每轮最多搜索次数”；可以调高该配置后重试。`unavailable` 表示搜索服务或当前账号暂时不可用，请稍后重试，并用搜索测试命令核对当前工具版本。
+
+### 输出达到最大长度
+
+在 WebUI 的“模型设置”中调高“最大输出长度”。建议逐步增加，并留意费用。
+
+### API 调用失败但聊天里没有完整异常
+
+这是预期行为。插件只向聊天用户返回认证失败、余额不足、参数错误、限流、服务繁忙、连接失败或超时等通俗提示；完整异常只写入插件日志。
+
+### 网页读取能力边界
+
+`fetch_page` 只接受有效的 HTTP/HTTPS URL，并通过 DeepSeek Web Search server tool 读取。它不是通用爬虫，无法保证读取需要登录、反爬限制严格、非公开或当前账号搜索能力不支持的页面。

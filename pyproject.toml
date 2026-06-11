@@ -1,11 +1,11 @@
 [project]
 name = "deepseek-anthropic-provider"
-version = "0.2.1"
+version = "0.2.3"
 description = "MaiBot Tool plugin for DeepSeek Anthropic-compatible API"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.104.0,<1.0.0",
-    "maibot-plugin-sdk>=2.0.0",
+    "maibot-plugin-sdk>=2.0.0,<3.0.0",
 ]
 
 [dependency-groups]
@@ -17,3 +17,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: 需要显式启用并会调用真实 DeepSeek API 的集成测试",
+]
