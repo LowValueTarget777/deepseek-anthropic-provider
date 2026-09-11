@@ -1,4 +1,4 @@
-"""DeepSeek Anthropic Provider 插件测试（v0.2.3 Tool 模式）。"""
+"""DeepSeek Anthropic Provider 插件测试（Tool 模式）。"""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,9 +14,10 @@ import pytest
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 PLUGIN_PATH = PLUGIN_DIR / "plugin.py"
 MANIFEST_PATH = PLUGIN_DIR / "_manifest.json"
-CONFIG_PATH = PLUGIN_DIR / "config.toml"
+CONFIG_EXAMPLE_PATH = PLUGIN_DIR / "config.example.toml"
 PYPROJECT_PATH = PLUGIN_DIR / "pyproject.toml"
 UV_LOCK_PATH = PLUGIN_DIR / "uv.lock"
+README_PATH = PLUGIN_DIR / "README.md"
 
 
 def load_plugin_module():
@@ -62,7 +63,7 @@ def test_manifest_has_no_llm_providers() -> None:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     assert "llm_providers" not in manifest
     assert manifest["id"] == "LowValueTarget.deepseek-anthropic-provider"
-    assert manifest["version"] == "0.2.3"
+    assert manifest["version"] == load_plugin_module().PLUGIN_VERSION
     assert "tool" in manifest["capabilities"]
     assert "i18n" in manifest
     assert manifest["i18n"]["default_locale"] == "zh-CN"
@@ -70,17 +71,24 @@ def test_manifest_has_no_llm_providers() -> None:
 
 def test_config_template_does_not_contain_api_key() -> None:
     """配置模板不应提交真实 API Key。"""
-    config_text = CONFIG_PATH.read_text(encoding="utf-8")
+    config_text = CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8")
 
     assert 'api_key = ""' in config_text
     assert "sk-" not in config_text
+
+
+def test_readme_does_not_document_unimplemented_fetch_full_text() -> None:
+    """README 不应提示用户开启插件并不存在的配置项。"""
+    readme_text = README_PATH.read_text(encoding="utf-8")
+
+    assert "fetch_full_text" not in readme_text
 
 
 def test_project_version_matches_manifest() -> None:
     """pyproject 版本应与 manifest 版本一致。"""
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     pyproject_text = PYPROJECT_PATH.read_text(encoding="utf-8")
-    config_text = CONFIG_PATH.read_text(encoding="utf-8")
+    config_text = CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8")
     lock_text = UV_LOCK_PATH.read_text(encoding="utf-8")
 
     assert f'version = "{manifest["version"]}"' in pyproject_text
@@ -94,8 +102,9 @@ def test_sdk_dependency_is_bounded_before_v3() -> None:
     pyproject_text = PYPROJECT_PATH.read_text(encoding="utf-8")
     sdk_dependency = next(item for item in manifest["dependencies"] if item["name"] == "maibot-plugin-sdk")
 
-    assert sdk_dependency["version_spec"] == ">=2.0.0,<3.0.0"
-    assert '"maibot-plugin-sdk>=2.0.0,<3.0.0"' in pyproject_text
+    assert sdk_dependency["version_spec"] == ">=2.5.2,<3.0.0"
+    assert manifest["sdk"]["min_version"] == "2.5.2"
+    assert '"maibot-plugin-sdk>=2.5.2,<3.0.0"' in pyproject_text
 
 
 # ================================================================
@@ -108,7 +117,7 @@ def test_config_schema_uses_select_labels() -> None:
     schema = module.DeepSeekAnthropicProviderPlugin.build_config_schema(
         plugin_id="LowValueTarget.deepseek-anthropic-provider",
         plugin_name="DeepSeek Anthropic Provider",
-        plugin_version="0.2.3",
+        plugin_version="0.2.4",
         plugin_description="测试",
         plugin_author="LowValueTarget",
     )
@@ -125,15 +134,15 @@ def test_config_schema_uses_select_labels() -> None:
     policy_field = sections["search"]["fields"]["search_policy"]
 
     assert model_field["ui_type"] == "select"
-    assert model_field["default"] == "deepseek-v4-flash"
+    assert model_field["default"] == "deepseek-flash"
     assert model_field["choice_labels"] == {
-        "deepseek-v4-pro": "DeepSeek V4 Pro（更聪明，成本更高）",
-        "deepseek-v4-flash": "DeepSeek V4 Flash（更快，更省钱）",
+        "deepseek-v4-pro": "DeepSeek V4 Pro（旧模型入口）",
+        "deepseek-flash": "DeepSeek Flash（推荐）",
     }
     assert thinking_field["ui_type"] == "select"
     assert thinking_field["choice_labels"] == {"enabled": "开启思考", "disabled": "关闭思考"}
     assert effort_field["ui_type"] == "select"
-    assert effort_field["choice_labels"] == {"high": "标准思考", "max": "深度思考"}
+    assert effort_field["choice_labels"] == {"low": "轻量思考", "high": "标准思考", "max": "深度思考"}
     assert tool_field["ui_type"] == "select"
     assert policy_field["ui_type"] == "select"
     assert policy_field["default"] == "balanced"
@@ -153,6 +162,28 @@ def test_config_schema_uses_select_labels() -> None:
         ("search", "search_policy"),
     ):
         assert sections[section_name]["fields"][field_name]["hint"]
+
+
+def test_config_schema_uses_top_tabs() -> None:
+    """WebUI 配置页应按配置分组渲染为顶部 tabs。"""
+    module = load_plugin_module()
+    schema = module.DeepSeekAnthropicProviderPlugin.build_config_schema(
+        plugin_id="LowValueTarget.deepseek-anthropic-provider",
+        plugin_name="DeepSeek Anthropic Provider",
+        plugin_version="0.2.4",
+        plugin_description="测试",
+        plugin_author="LowValueTarget",
+    )
+
+    assert schema["layout"]["type"] == "tabs"
+    assert schema["layout"]["tabs"] == [
+        {"id": "plugin", "title": "基础设置", "icon": "package", "order": 0, "sections": ["plugin"]},
+        {"id": "auth", "title": "密钥设置", "icon": "key-round", "order": 1, "sections": ["auth"]},
+        {"id": "model", "title": "模型设置", "icon": "brain-circuit", "order": 2, "sections": ["model"]},
+        {"id": "thinking", "title": "思考设置", "icon": "brain", "order": 3, "sections": ["thinking"]},
+        {"id": "search", "title": "联网搜索", "icon": "search", "order": 4, "sections": ["search"]},
+        {"id": "debug", "title": "调试与日志", "icon": "bug", "order": 5, "sections": ["debug"]},
+    ]
 
 
 def test_legacy_model_tool_config_is_normalized() -> None:
@@ -178,7 +209,7 @@ def test_legacy_model_tool_config_is_normalized() -> None:
     )
 
     assert changed is True
-    assert normalized["plugin"]["config_version"] == "0.2.3"
+    assert normalized["plugin"]["config_version"] == module.PLUGIN_VERSION
     assert normalized["model"]["model_choice"] == "deepseek-v4-pro"
     assert normalized["search"]["web_search_tool"] == "web_search_20250305"
     assert normalized["search"]["max_search_uses"] == 3
@@ -366,11 +397,12 @@ async def test_call_deepseek_passes_correct_params_to_anthropic() -> None:
 
     assert result == "回复内容"
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["model"] == "deepseek-v4-flash"
-    assert call_kwargs["system"].startswith("你是助手\n\n【当前时间】")
-    assert "今天、最新、近期、今年" in call_kwargs["system"]
+    assert call_kwargs["model"] == "deepseek-flash"
+    assert call_kwargs["system"] == "你是助手"
+    assert "今天、最新、近期、今年" in call_kwargs["messages"][0]["content"]
     assert call_kwargs["max_tokens"] == 4096
-    assert call_kwargs["messages"] == [{"role": "user", "content": "测试"}]
+    assert call_kwargs["messages"][0]["role"] == "user"
+    assert call_kwargs["messages"][0]["content"].startswith("测试\n\n【当前时间】")
     assert len(call_kwargs["tools"]) == 1
     assert call_kwargs["tools"][0]["name"] == "web_search"
     assert call_kwargs["thinking"] == {"type": "enabled"}
@@ -445,8 +477,9 @@ async def test_call_deepseek_injects_time_for_web_search_type_without_system() -
         )
 
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["system"].startswith("【当前时间】")
-    assert "UTC" in call_kwargs["system"]
+    assert "system" not in call_kwargs
+    assert "【当前时间】" in call_kwargs["messages"][0]["content"]
+    assert "UTC" in call_kwargs["messages"][0]["content"]
 
 
 async def test_call_deepseek_injects_time_for_web_search_name() -> None:
@@ -470,7 +503,8 @@ async def test_call_deepseek_injects_time_for_web_search_name() -> None:
         )
 
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["system"].startswith("保留这段系统提示。\n\n【当前时间】")
+    assert call_kwargs["system"] == "保留这段系统提示。"
+    assert "【当前时间】" in call_kwargs["messages"][0]["content"]
 
 
 async def test_call_deepseek_does_not_inject_time_for_non_search_tool() -> None:
@@ -544,7 +578,7 @@ async def test_call_deepseek_uses_configured_model() -> None:
         await plugin._call_deepseek("测试")
 
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["model"] == "deepseek-v4-flash"
+    assert call_kwargs["model"] == "deepseek-flash"
 
 
 async def test_call_deepseek_logs_web_search_tool_result_citations() -> None:
@@ -661,6 +695,7 @@ async def test_call_deepseek_logs_deduplicated_real_sdk_search_sources() -> None
     [
         ("max_uses_exceeded", "联网搜索失败：已达到每轮最多搜索次数。"),
         ("unavailable", "联网搜索失败：搜索服务暂时不可用。"),
+        ("invalid_input", "联网搜索失败：搜索工具输入无效。"),
     ],
 )
 async def test_call_deepseek_returns_clear_search_error_without_final_text(
@@ -668,8 +703,6 @@ async def test_call_deepseek_returns_clear_search_error_without_final_text(
     expected: str,
 ) -> None:
     """搜索工具失败且没有最终回答时，应返回清晰中文错误。"""
-    from anthropic.types import WebSearchToolResultError
-
     _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
     mock_response = SimpleNamespace(
         model="deepseek-v4-flash",
@@ -677,7 +710,7 @@ async def test_call_deepseek_returns_clear_search_error_without_final_text(
         content=[
             SimpleNamespace(
                 type="web_search_tool_result",
-                content=WebSearchToolResultError(
+                content=SimpleNamespace(
                     type="web_search_tool_result_error",
                     error_code=error_code,
                 ),
@@ -690,9 +723,10 @@ async def test_call_deepseek_returns_clear_search_error_without_final_text(
     mock_client.close = AsyncMock()
 
     with patch("anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await plugin._call_deepseek("搜索")
+        with pytest.raises(_module.DeepSeekRequestError) as error:
+            await plugin._call_deepseek("搜索")
 
-    assert result == expected
+    assert str(error.value) == expected
     plugin.ctx.logger.warning.assert_called()
 
 
@@ -727,6 +761,176 @@ async def test_call_deepseek_keeps_final_text_when_search_tool_failed() -> None:
     plugin.ctx.logger.warning.assert_called()
 
 
+async def test_call_deepseek_allows_required_search_when_results_are_returned() -> None:
+    """要求联网时，响应里有可用搜索结果才返回最终文本。"""
+    _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[
+            SimpleNamespace(type="server_tool_use", name="web_search", input={"query": "DeepSeek"}),
+            SimpleNamespace(
+                type="web_search_tool_result",
+                content=[{"title": "DeepSeek", "url": "https://api-docs.deepseek.com"}],
+            ),
+            SimpleNamespace(type="text", text="搜索后的回复", citations=[]),
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=10),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        result = await plugin._call_deepseek(
+            "搜索",
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 1}],
+            require_web_search=True,
+        )
+
+    assert result == "搜索后的回复"
+
+
+async def test_call_deepseek_rejects_required_search_error_even_with_final_text() -> None:
+    """强制搜索遇到错误时，不应返回搜索失败后的模型补写文本。"""
+    _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[
+            SimpleNamespace(type="server_tool_use", name="web_search", input={"query": "DeepSeek"}),
+            SimpleNamespace(
+                type="web_search_tool_result",
+                content=SimpleNamespace(
+                    type="web_search_tool_result_error",
+                    error_code="unavailable",
+                ),
+            ),
+            SimpleNamespace(type="text", text="搜索失败后凭常识补写的回答", citations=[]),
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=10),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(_module.DeepSeekRequestError, match="搜索服务暂时不可用"):
+            await plugin._call_deepseek(
+                "搜索",
+                tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 1}],
+                require_web_search=True,
+            )
+
+
+async def test_call_deepseek_rejects_required_search_empty_results_even_with_final_text() -> None:
+    """强制搜索没有命中结果时，不应返回缺乏来源的模型文本。"""
+    _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[
+            SimpleNamespace(type="server_tool_use", name="web_search", input={"query": "不存在的内容"}),
+            SimpleNamespace(type="web_search_tool_result", content=[]),
+            SimpleNamespace(type="text", text="没有搜索结果也给出的回答", citations=[]),
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=10),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(_module.DeepSeekRequestError, match="没有返回可用的网页搜索结果"):
+            await plugin._call_deepseek(
+                "搜索",
+                tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 1}],
+                require_web_search=True,
+            )
+
+
+async def test_call_deepseek_rejects_required_search_without_server_tool_activity() -> None:
+    """要求联网时，如果 DeepSeek 没实际调用搜索工具，应拒绝返回可能幻觉的文本。"""
+    _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="没有搜索也给出的回答", citations=[])],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=10),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(_module.DeepSeekRequestError, match="没有返回可用的网页搜索结果"):
+            await plugin._call_deepseek(
+                "请读取网页",
+                tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 1}],
+                require_web_search=True,
+            )
+    plugin.ctx.logger.warning.assert_called_with("DeepSeek Anthropic 未返回可用网页搜索结果")
+
+
+@pytest.mark.parametrize(
+    ("source_url", "target_url", "expected"),
+    [
+        ("https://example.com:443/docs/page", "https://EXAMPLE.com/docs/page", True),
+        ("https://example.com", "https://example.com/", True),
+        ("https://example.com/docs/page", "https://example.com/docs/page/", False),
+        ("https://example.com/docs/page?from=search#intro", "https://example.com/docs/page", False),
+        ("https://example.com/docs/page/section", "https://example.com/docs/page", False),
+        ("https://example.com/docs", "https://example.com/docs/page", False),
+        ("https://example.com/", "https://example.com/docs/page", False),
+        ("https://example.com/article?id=1", "https://example.com/article?id=2", False),
+        ("https://example.com/#/1", "https://example.com/#/2", False),
+        ("https://example.com/a;id=1", "https://example.com/a;id=2", False),
+        ("https://other.example/docs/page", "https://example.com/docs/page", False),
+        ("https://example.com.evil.test/docs/page", "https://example.com/docs/page", False),
+        ("ftp://example.com/docs/page", "https://example.com/docs/page", False),
+    ],
+)
+def test_related_web_url_matches_only_relevant_http_sources(
+    source_url: str,
+    target_url: str,
+    expected: bool,
+) -> None:
+    """网页来源匹配应容忍规范化差异，同时拒绝无关或欺骗性主机。"""
+    module = load_plugin_module()
+
+    assert module._is_related_web_url(source_url, target_url) is expected
+
+
+async def test_call_deepseek_rejects_required_source_when_results_are_unrelated() -> None:
+    """网页读取只有无关来源时，不应把模型文本当作目标页面内容。"""
+    _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[
+            SimpleNamespace(type="server_tool_use", name="web_search", input={"query": "目标页面"}),
+            SimpleNamespace(
+                type="web_search_tool_result",
+                content=[{"title": "无关页面", "url": "https://unrelated.example/article"}],
+            ),
+            SimpleNamespace(type="text", text="来自无关页面的摘要", citations=[]),
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=10),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(_module.DeepSeekRequestError, match="未能确认读取了指定网页"):
+            await plugin._call_deepseek(
+                "读取目标页面",
+                tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 1}],
+                require_web_search=True,
+                required_source_url="https://target.example/docs/page",
+            )
+
+
 async def test_call_deepseek_reports_max_tokens_without_final_text() -> None:
     """没有最终文本且达到输出上限时，应提示调高最大输出长度。"""
     _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
@@ -741,9 +945,9 @@ async def test_call_deepseek_reports_max_tokens_without_final_text() -> None:
     mock_client.close = AsyncMock()
 
     with patch("anthropic.AsyncAnthropic", return_value=mock_client):
-        result = await plugin._call_deepseek("长回答")
-
-    assert result == "DeepSeek 输出达到最大长度，请在插件配置中调高“最大输出长度”。"
+        with pytest.raises(_module.DeepSeekRequestError, match="输出达到最大长度") as error:
+            await plugin._call_deepseek("长回答")
+    assert error.value.code == "truncated"
 
 
 @pytest.mark.parametrize(
@@ -819,7 +1023,10 @@ async def test_fetch_page_uses_web_search_tool() -> None:
 
     assert result == {"name": "fetch_page", "content": "页面摘要"}
     call_kwargs = mock_call.call_args.kwargs
-    assert call_kwargs["tools"] == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 4}]
+    assert call_kwargs["tools"] == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
+    assert call_kwargs["require_web_search"] is True
+    assert call_kwargs["required_source_url"] == "https://api-docs.deepseek.com"
+    assert "不要凭常识、标题或训练数据补写内容" in call_kwargs["user_prompt"]
 
 
 async def test_search_and_summarize_uses_web_search_tool() -> None:
@@ -838,6 +1045,7 @@ async def test_search_and_summarize_uses_web_search_tool() -> None:
     assert mock_call.call_args.kwargs["tools"] == [
         {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
     ]
+    assert mock_call.call_args.kwargs["require_web_search"] is True
 
 
 @pytest.mark.parametrize(
@@ -961,3 +1169,24 @@ async def test_search_test_command_uses_web_search_tool() -> None:
     assert mock_call.call_args.kwargs["tools"] == [
         {"type": "web_search_20260209", "name": "web_search", "max_uses": 2}
     ]
+    assert mock_call.call_args.kwargs["require_web_search"] is True
+
+
+async def test_call_deepseek_configures_bounded_request_timeout() -> None:
+    """DeepSeek 请求应显式设置有限超时，避免 Tool 长时间占用。"""
+    _module, plugin = make_plugin({"auth": {"api_key": "sk-test"}})
+    mock_response = SimpleNamespace(
+        model="deepseek-v4-flash",
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="正常回复", citations=[])],
+        usage=SimpleNamespace(input_tokens=2, output_tokens=3),
+    )
+    mock_client = AsyncMock()
+    mock_client.messages.create.return_value = mock_response
+    mock_client.close = AsyncMock()
+
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client) as client_class:
+        await plugin._call_deepseek("测试超时")
+
+    assert client_class.call_args.kwargs["timeout"] == 120
+    assert client_class.call_args.kwargs["max_retries"] == 0

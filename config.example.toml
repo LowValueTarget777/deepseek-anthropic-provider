@@ -1,0 +1,35 @@
+# DeepSeek Anthropic Provider 配置示例
+# 说明：MaiBot 运行时会按配置模型生成或维护本地 config.toml。
+# 本文件仅作参考；请勿把含真实 API Key 的 config.toml 提交进仓库。
+
+[plugin]
+enabled = true
+config_version = "0.2.5"
+max_concurrent_requests = 4
+coalesce_requests = true
+
+[auth]
+# 推荐留空，并通过 DEEPSEEK_API_KEY 环境变量提供密钥。
+api_key = ""
+api_key_env = "DEEPSEEK_API_KEY"
+
+[model]
+model_choice = "deepseek-flash"
+max_tokens = 4096
+request_timeout_seconds = 120.0
+
+[thinking]
+thinking_mode = "enabled"
+thinking_effort = "high"
+
+[search]
+enabled = true
+web_search_tool = "web_search_20260209"
+max_search_uses = 5
+search_policy = "balanced"
+default_depth = "standard"
+
+[debug]
+log_search_sources = true
+log_raw_summary = false
+enable_test_commands = true
