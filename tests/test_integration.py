@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import importlib.util
 import os
@@ -55,20 +55,31 @@ async def test_live_ping() -> None:
     """验证当前密钥、模型和 Anthropic 接口可用。"""
 
     _module, plugin = make_live_plugin()
-    result = await plugin._call_deepseek("请只回复 pong。", system="你是连通性测试助手。")
-
-    assert result.strip()
+    try:
+        result = await plugin._call_deepseek("请只回复 pong。", system="你是连通性测试助手。")
+        assert result.strip().lower().rstrip(".。!") == "pong"
+    finally:
+        await plugin.on_unload()
 
 
 async def test_live_single_search() -> None:
     """验证当前账号支持配置中的 Web Search server tool。"""
 
     module, plugin = make_live_plugin()
-    result = await plugin._call_deepseek(
-        "请联网搜索 DeepSeek 官方网站，并用一句话回答。",
-        system="你是搜索连通性测试助手。",
-        tools=module._build_web_search_tools(plugin.config, max_uses=1),
-        require_web_search=True,
-    )
-
-    assert result.strip()
+    try:
+        with patch.object(plugin, "_parse_response", wraps=plugin._parse_response) as parse:
+            result = await plugin._call_deepseek(
+                "请联网搜索 DeepSeek 官方网站，并用一句话回答。",
+                system="你是搜索连通性测试助手。",
+                tools=module._build_web_search_tools(plugin.config, max_uses=1),
+                require_web_search=True,
+            )
+        assert result.strip()
+        response = parse.call_args.args[0]
+        assert response.stop_reason == "end_turn"
+        assert any(
+            module._extract_search_result_urls(module._block_to_dict(block))
+            for block in response.content
+        ), "必须有真实的网页搜索结果，错误提示或模型自行生成的链接不算成功"
+    finally:
+        await plugin.on_unload()
