@@ -1,15 +1,21 @@
 # DeepSeek Anthropic Provider
 
-把 DeepSeek 的 Anthropic 兼容接口接入 MaiBot，让 Bot 可以按需调用联网搜索、网页读取和 DeepSeek 深度推理能力。
+把 DeepSeek 的 Anthropic 兼容接口接入 MaiBot，让 Bot 可以调用 DeepSeek 提供的联网搜索、网页读取和深度推理能力。
 
-这个插件不是替换 MaiBot 的人格、记忆或聊天上下文，而是作为 MaiBot Tool 插件存在：主模型判断需要工具时，才会把问题交给本插件处理。
+> **⚠️ 重要提示**
+>
+> **建议到「麦麦设置 → 后处理 → 高级设置」中把 `enable_overflow_return_all` 打开。**
+>
+> 本插件通过搜索或网页读取返回的内容可能较长。如果该开关未启用，MaiBot 的后处理管线会把超长内容截断并可能直接返回「不知道」，导致检索结果无法正常交给 AI 进行总结，用户侧看起来就是“搜到了但麦麦说不知道”。
+
+
 
 ## 插件信息
 
 | 项目 | 内容 |
 | --- | --- |
 | 插件 ID | `LowValueTarget.deepseek-anthropic-provider` |
-| 当前版本 | `0.2.3` |
+| 当前版本 | `0.2.4` |
 | 插件类型 | Tool 插件 |
 | 支持能力 | `tool`、`send.text` |
 | 主要依赖 | `anthropic>=0.104.0,<1.0.0`、`maibot-plugin-sdk>=2.0.0,<3.0.0` |
@@ -53,9 +59,11 @@ uv sync
 
 然后重启 MaiBot，或按当前运行方式重新加载插件。
 
+仓库只提交 `config.example.toml` 作为示例，不提交本地运行用的 `config.toml`。MaiBot 首次加载或保存配置时会按配置模型生成本地配置；如果需要手动参考，请复制示例内容后填入自己的密钥或环境变量。
+
 ## 配置
 
-插件支持通过 WebUI 配置。配置项都使用简体中文说明，常用设置包括：
+插件支持通过 WebUI 配置，配置页顶部按分组显示为标签页。配置项都使用简体中文说明，常用设置包括：
 
 | 分组 | 配置项 | 说明 |
 | --- | --- | --- |
@@ -78,6 +86,7 @@ uv sync
 2. 环境变量 `DEEPSEEK_API_KEY`。
 
 不要把真实 API 密钥提交到 Git 仓库或公开截图中。
+推荐把 `api_key` 留空，并通过 `DEEPSEEK_API_KEY` 环境变量提供密钥。
 
 搜索积极程度只影响插件内部 DeepSeek 使用 server web search 的倾向，不会控制 MaiBot 主模型是否调用本插件。
 
@@ -156,6 +165,8 @@ uv sync
 
 `fetch_page` 只接受有效的 `http://` 或 `https://` 网页地址。它依赖 DeepSeek Web Search server tool，不是通用爬虫，无法保证读取需要登录、反爬限制严格或账号搜索能力不支持的网页。
 
+如果 DeepSeek 没有返回有效搜索结果，插件会拒绝返回可能来自模型常识的网页摘要；如果搜索来源与目标 URL 无关，也会提示无法确认读取了指定网页。
+
 ### 搜索来源会发到聊天里吗
 
 默认不会。搜索来源主要写入日志，避免在聊天回复末尾追加过长的引用内容。
@@ -168,7 +179,7 @@ uv sync
 
 调用插件时，相关问题、链接和上下文会被发送到 DeepSeek API。请不要让 Bot 处理不应发送给第三方服务的敏感信息。
 
-插件不会内置或提交任何真实 API 密钥。发布前请再次确认 `config.toml`、截图和日志中没有泄露密钥。
+插件不会内置或提交任何真实 API 密钥。发布前请再次确认 `config.toml`、`config.example.toml`、截图和日志中没有泄露密钥。
 
 ## 更多文档
 

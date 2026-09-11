@@ -68,6 +68,7 @@ async def test_live_single_search() -> None:
         "请联网搜索 DeepSeek 官方网站，并用一句话回答。",
         system="你是搜索连通性测试助手。",
         tools=module._build_web_search_tools(plugin.config, max_uses=1),
+        require_web_search=True,
     )
 
     assert result.strip()

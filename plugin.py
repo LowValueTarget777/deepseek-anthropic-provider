@@ -15,8 +15,9 @@ from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 
-PLUGIN_VERSION = "0.2.3"
+PLUGIN_VERSION = "0.2.4"
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
+DEEPSEEK_REQUEST_TIMEOUT_SECONDS = 120
 
 MODEL_PRO = "deepseek-v4-pro"
 MODEL_FLASH = "deepseek-v4-flash"
@@ -92,8 +93,17 @@ SEARCH_ERROR_MESSAGES = {
     "too_many_requests": "搜索请求过于频繁。",
     "query_too_long": "搜索关键词过长。",
     "request_too_large": "搜索请求内容过大。",
+    "invalid_input": "搜索工具输入无效。",
     "invalid_tool_input": "搜索工具参数无效。",
 }
+
+REQUIRED_WEB_SEARCH_NOT_USED_MESSAGE = (
+    "DeepSeek 没有返回可用的网页搜索结果，无法确认已读取网页内容。"
+    "请稍后重试，或检查搜索工具版本和账号权限。"
+)
+REQUIRED_SOURCE_URL_NOT_FOUND_MESSAGE = (
+    "DeepSeek 已执行网页搜索，但未能确认读取了指定网页。请检查网址后重试。"
+)
 
 
 class DeepSeekRequestError(RuntimeError):
@@ -352,6 +362,30 @@ def _add_choice_labels(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
+def _add_tab_layout(schema: dict[str, Any]) -> dict[str, Any]:
+    """让 WebUI 按配置分组渲染为顶部标签页。"""
+
+    sections = schema.get("sections")
+    if not isinstance(sections, dict):
+        return schema
+
+    ordered_sections = sorted(sections.items(), key=lambda item: (item[1] or {}).get("order", 0))
+    schema["layout"] = {
+        "type": "tabs",
+        "tabs": [
+            {
+                "id": section_name,
+                "title": (section_schema or {}).get("title") or section_name,
+                "icon": (section_schema or {}).get("icon"),
+                "order": (section_schema or {}).get("order", 0),
+                "sections": [section_name],
+            }
+            for section_name, section_schema in ordered_sections
+        ],
+    }
+    return schema
+
+
 def _version_parts(version: str) -> tuple[int, ...] | None:
     """将纯数字点分版本转换为可比较元组。"""
 
@@ -511,9 +545,12 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name in (
         "type",
+        "name",
         "text",
         "citations",
         "content",
+        "input",
+        "tool_use_id",
         "url",
         "title",
         "cited_text",
@@ -581,6 +618,23 @@ def _extract_search_errors_from_block(block: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _extract_search_result_urls(block: dict[str, Any]) -> list[str]:
+    """提取一次成功 web search 返回的有效网页 URL。"""
+
+    if str(block.get("type", "") or "").strip() != "web_search_tool_result":
+        return []
+
+    urls: list[str] = []
+    for raw_item in _as_block_list(block.get("content")):
+        item = _block_to_dict(raw_item)
+        if str(item.get("type", "") or "").strip() == "web_search_tool_result_error":
+            continue
+        url = str(item.get("url", "") or "").strip()
+        if url and _is_valid_web_url(url) and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def _search_error_message(error_code: str) -> str:
     return SEARCH_ERROR_MESSAGES.get(error_code, f"搜索工具返回错误（{error_code}）。")
 
@@ -598,6 +652,43 @@ def _is_valid_web_url(url: str) -> bool:
     except ValueError:
         return False
     return parsed.scheme.lower() in {"http", "https"} and bool(hostname)
+
+
+def _normalized_web_url_parts(url: str) -> tuple[str, int | None, str] | None:
+    """返回用于来源核验的主机、非默认端口和规范化路径。"""
+
+    if not _is_valid_web_url(url):
+        return None
+    try:
+        parsed = urlparse(url.strip())
+        port = parsed.port
+    except ValueError:
+        return None
+
+    scheme = parsed.scheme.lower()
+    if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+        port = None
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/") or "/"
+    return str(parsed.hostname or "").lower(), port, path
+
+
+def _is_related_web_url(source_url: str, target_url: str) -> bool:
+    """判断搜索来源是否与 fetch_page 的目标网页相关。"""
+
+    source = _normalized_web_url_parts(source_url)
+    target = _normalized_web_url_parts(target_url)
+    if source is None or target is None:
+        return False
+
+    source_host, source_port, source_path = source
+    target_host, target_port, target_path = target
+    if (source_host, source_port) != (target_host, target_port):
+        return False
+    if source_path == target_path or source_path == "/" or target_path == "/":
+        return True
+    return source_path.startswith(f"{target_path}/") or target_path.startswith(f"{source_path}/")
 
 
 # ========== 插件主体 ==========
@@ -624,7 +715,7 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
             plugin_description=plugin_description,
             plugin_author=plugin_author,
         )
-        return _add_choice_labels(schema)
+        return _add_tab_layout(_add_choice_labels(schema))
 
     def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
         if _is_future_config_version(config_data):
@@ -662,6 +753,8 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         *,
         system: str = "",
         tools: list[dict[str, Any]] | None = None,
+        require_web_search: bool = False,
+        required_source_url: str | None = None,
     ) -> str:
         """通过 Anthropic SDK 调用 DeepSeek，返回提取后的文本内容。
 
@@ -702,7 +795,11 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         except ImportError as exc:
             raise DeepSeekRequestError("缺少 anthropic 依赖，请先安装插件依赖") from exc
 
-        client = AsyncAnthropic(api_key=api_key, base_url=base_url)
+        client = AsyncAnthropic(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=DEEPSEEK_REQUEST_TIMEOUT_SECONDS,
+        )
         try:
             try:
                 response = await client.messages.create(**request_body)
@@ -716,6 +813,7 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         text_parts: list[str] = []
         citations: list[dict[str, str]] = []
         search_errors: list[str] = []
+        search_result_urls: list[str] = []
         raw_content = getattr(response, "content", [])
 
         if isinstance(raw_content, (list, tuple)) and not isinstance(raw_content, (str, bytes)):
@@ -730,6 +828,9 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 for error_code in _extract_search_errors_from_block(block):
                     if error_code not in search_errors:
                         search_errors.append(error_code)
+                for result_url in _extract_search_result_urls(block):
+                    if result_url not in search_result_urls:
+                        search_result_urls.append(result_url)
 
         citations = _deduplicate_citations(citations)
         if self.config.debug.log_search_sources and citations:
@@ -747,6 +848,18 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 getattr(response.usage, "input_tokens", 0) if hasattr(response, "usage") else 0,
                 getattr(response.usage, "output_tokens", 0) if hasattr(response, "usage") else 0,
             )
+
+        if require_web_search and search_errors:
+            return f"联网搜索失败：{_search_error_message(search_errors[0])}"
+        if require_web_search and not search_result_urls:
+            self.ctx.logger.warning("DeepSeek Anthropic 未返回可用网页搜索结果")
+            return REQUIRED_WEB_SEARCH_NOT_USED_MESSAGE
+        if required_source_url and not any(
+            _is_related_web_url(result_url, required_source_url)
+            for result_url in search_result_urls
+        ):
+            self.ctx.logger.warning("DeepSeek Anthropic 搜索结果未匹配目标网页")
+            return REQUIRED_SOURCE_URL_NOT_FOUND_MESSAGE
 
         final_text = "\n\n".join(text_parts).strip()
         if final_text:
@@ -784,7 +897,12 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
         user_prompt = f"{query}\n{reason}".strip()
 
         try:
-            result = await self._call_deepseek(user_prompt=user_prompt, system=system, tools=tools)
+            result = await self._call_deepseek(
+                user_prompt=user_prompt,
+                system=system,
+                tools=tools,
+                require_web_search=True,
+            )
         except Exception as exc:
             return {"name": "search_and_summarize", "content": self._format_tool_error("搜索失败", exc)}
 
@@ -814,13 +932,21 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
 
         reason = f"（读取原因：{explanation}）" if explanation.strip() else ""
         system = "你是通过 MaiBot Tool 调用的 DeepSeek 助手。任务：读取指定网页内容并呈现。"
-        user_prompt = f"请读取以下网页的内容并返回：\n{url}\n{reason}".strip()
+        user_prompt = (
+            "请读取以下网页 URL 的公开文本内容，并只基于该 URL 的实际内容回答。\n"
+            "必须调用 web_search 工具检索或读取这个 URL；如果无法读取、搜索不到或页面不支持，"
+            "请直接说明无法读取，不要凭常识、标题或训练数据补写内容。\n"
+            f"URL：{url}\n"
+            f"{reason}"
+        ).strip()
 
         try:
             result = await self._call_deepseek(
                 user_prompt=user_prompt,
                 system=system,
                 tools=_build_web_search_tools(self.config),
+                require_web_search=True,
+                required_source_url=url,
             )
         except Exception as exc:
             return {"name": "fetch_page", "content": self._format_tool_error("读取页面失败", exc)}
@@ -901,6 +1027,7 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                 user_prompt=f"请联网搜索并用一句话回答：{query}",
                 system="你是 MaiBot 搜索测试助手。",
                 tools=tools,
+                require_web_search=True,
             )
         except Exception as exc:
             error_message = self._format_tool_error("DeepSeek Anthropic 搜索测试失败", exc)
