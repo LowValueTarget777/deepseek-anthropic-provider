@@ -4,7 +4,7 @@
 
 [plugin]
 enabled = true
-config_version = "0.2.5"
+config_version = "0.2.6"
 max_concurrent_requests = 4
 coalesce_requests = true
 

@@ -276,7 +276,7 @@ async def test_failure_is_not_cached(runtime):
     assert client.messages.create.await_count == 2
 
 
-@pytest.mark.parametrize("depth,cap,effort", [("quick", 2, "low"), ("standard", 3, "high"), ("deep", 5, "max")])
+@pytest.mark.parametrize("depth,cap,effort", [("quick", 5, "low"), ("standard", 5, "high"), ("deep", 5, "max")])
 async def test_depth_budget_and_scope_are_forwarded(runtime, depth, cap, effort):
     _, plugin, client, _ = runtime
     plugin.config.thinking.thinking_effort = "max"
@@ -477,3 +477,70 @@ async def test_real_sdk_does_not_retry_transient_errors():
     finally:
         await plugin.on_unload()
         await transport_client.aclose()
+
+
+async def test_required_search_preserves_hits_before_budget_exhaustion(runtime):
+    """A later rejected search must not erase earlier successful results."""
+    _, plugin, client, _ = runtime
+    client.messages.create.return_value = response(
+        text="VERIFIED_SUMMARY", urls=["https://example.com/article"],
+        error="max_uses_exceeded",
+    )
+    result = await plugin.handle_search_and_summarize(query="test", depth="standard")
+    assert "VERIFIED_SUMMARY" in result["content"]
+    assert "基于已取得的搜索结果" in result["content"]
+    assert "搜索失败" not in result["content"]
+    body = client.messages.create.call_args.kwargs
+    assert body["tools"][0]["max_uses"] == 5
+    assert "最多允许 5 次" in body["system"]
+
+
+async def test_budget_exhaustion_without_hits_still_rejects_fabricated_text(runtime):
+    _, plugin, client, _ = runtime
+    client.messages.create.return_value = response(text="UNVERIFIED", error="max_uses_exceeded")
+    result = await plugin.handle_search_and_summarize(query="test")
+    assert "已达到每轮最多搜索次数" in result["content"]
+    assert "UNVERIFIED" not in result["content"]
+
+
+async def test_quota_with_hits_does_not_bypass_exact_page_verification(runtime):
+    _, plugin, client, _ = runtime
+    client.messages.create.return_value = response(
+        text="WRONG_PAGE", urls=["https://example.com/other"], error="max_uses_exceeded",
+    )
+    result = await plugin.handle_fetch_page(url="https://example.com/target")
+    assert "未能确认读取了指定网页" in result["content"]
+    assert "WRONG_PAGE" not in result["content"]
+
+
+async def test_fetch_keeps_exact_page_hits_when_later_search_hits_limit(runtime):
+    _, plugin, client, _ = runtime
+    url = "https://example.com/target"
+    client.messages.create.return_value = response(
+        text="TARGET_SUMMARY", urls=[url], error="max_uses_exceeded",
+    )
+    result = await plugin.handle_fetch_page(url=url)
+    assert "TARGET_SUMMARY" in result["content"]
+    assert "搜索失败" not in result["content"]
+
+
+async def test_other_search_errors_remain_failures_even_with_hits(runtime):
+    _, plugin, client, _ = runtime
+    client.messages.create.return_value = response(
+        text="UNVERIFIED_AFTER_ERROR", urls=["https://example.com"], error="unavailable",
+    )
+    result = await plugin.handle_search_and_summarize(query="test")
+    assert "搜索服务暂时不可用" in result["content"]
+    assert "UNVERIFIED_AFTER_ERROR" not in result["content"]
+
+
+async def test_verified_truncated_summary_is_preserved_after_quota(runtime):
+    module, plugin, client, _ = runtime
+    client.messages.create.return_value = response(
+        text="PARTIAL_VERIFIED", urls=["https://example.com"],
+        error="max_uses_exceeded", stop="max_tokens",
+    )
+    with pytest.raises(module.DeepSeekRequestError) as caught:
+        await plugin._call_deepseek("test", require_web_search=True)
+    assert caught.value.code == "truncated"
+    assert caught.value.partial_text == "PARTIAL_VERIFIED"

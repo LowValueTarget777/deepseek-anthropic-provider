@@ -97,7 +97,7 @@ $env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 - 允许联网搜索：关闭后 `search_and_summarize` 和 `fetch_page` 不可用，`deepseek_proxy` 也不会获得搜索工具。
 - 搜索工具版本：默认 `web_search_20260209`，也可切到 `web_search_20250305` 做兼容测试。
 - 每轮最多搜索次数：插件传给 DeepSeek 的 server tool `max_uses`，默认 5。
-- 默认搜索档位：快速 `quick` 最多 2 次、标准 `standard` 最多 3 次、深入 `deep` 使用配置的次数上限。默认标准；所有档位仍受全局上限约束。
+- 默认搜索档位：快速 `quick`、标准 `standard`、深入 `deep` 均使用配置中的次数上限。默认标准；档位控制思考深度，不再暗中把搜索次数缩小为 2/3 次。
 - 搜索积极程度：控制通用代理在什么情况下使用搜索，可选择更积极、按需搜索、仅显式请求。
 
 搜索积极程度只影响插件内部 DeepSeek 使用 server web search 的倾向，不能决定 MaiBot 主模型是否调用本插件。搜索和网页读取工具被调用时会直接联网，不受积极程度限制。

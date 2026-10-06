@@ -398,7 +398,8 @@ async def test_call_deepseek_passes_correct_params_to_anthropic() -> None:
     assert result == "回复内容"
     call_kwargs = mock_client.messages.create.call_args.kwargs
     assert call_kwargs["model"] == "deepseek-flash"
-    assert call_kwargs["system"] == "你是助手"
+    assert call_kwargs["system"].startswith("你是助手\n")
+    assert "最多允许 3 次" in call_kwargs["system"]
     assert "今天、最新、近期、今年" in call_kwargs["messages"][0]["content"]
     assert call_kwargs["max_tokens"] == 4096
     assert call_kwargs["messages"][0]["role"] == "user"
@@ -503,7 +504,7 @@ async def test_call_deepseek_injects_time_for_web_search_name() -> None:
         )
 
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["system"] == "保留这段系统提示。"
+    assert call_kwargs["system"].startswith("保留这段系统提示。\n")
     assert "【当前时间】" in call_kwargs["messages"][0]["content"]
 
 
@@ -606,7 +607,7 @@ async def test_call_deepseek_logs_web_search_tool_result_citations() -> None:
         result = await plugin._call_deepseek("搜索一下")
 
     assert result == "搜索后的回复"
-    plugin.ctx.logger.info.assert_called_with(
+    plugin.ctx.logger.info.assert_any_call(
         "DeepSeek Anthropic 搜索来源: %s",
         [{"title": "DeepSeek 文档", "url": "https://api-docs.deepseek.com"}],
     )
@@ -684,7 +685,7 @@ async def test_call_deepseek_logs_deduplicated_real_sdk_search_sources() -> None
         result_text = await plugin._call_deepseek("搜索")
 
     assert result_text == "搜索回答"
-    plugin.ctx.logger.info.assert_called_with(
+    plugin.ctx.logger.info.assert_any_call(
         "DeepSeek Anthropic 搜索来源: %s",
         [{"title": "重复来源", "url": "https://api-docs.deepseek.com"}],
     )
@@ -1023,7 +1024,7 @@ async def test_fetch_page_uses_web_search_tool() -> None:
 
     assert result == {"name": "fetch_page", "content": "页面摘要"}
     call_kwargs = mock_call.call_args.kwargs
-    assert call_kwargs["tools"] == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
+    assert call_kwargs["tools"] == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 4}]
     assert call_kwargs["require_web_search"] is True
     assert call_kwargs["required_source_url"] == "https://api-docs.deepseek.com"
     assert "不要凭常识、标题或训练数据补写内容" in call_kwargs["user_prompt"]

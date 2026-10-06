@@ -20,7 +20,7 @@ from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 
-PLUGIN_VERSION = "0.2.5"
+PLUGIN_VERSION = "0.2.6"
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEEPSEEK_REQUEST_TIMEOUT_SECONDS = 120
 MAX_PENDING_REQUESTS = 64
@@ -335,7 +335,7 @@ class SearchConfig(PluginConfigBase):
     )
     default_depth: Literal["quick", "standard", "deep"] = Field(
         default="standard",
-        description="搜索和网页检索的默认档位：快速最多 2 次、标准最多 3 次、深入使用配置上限。",
+        description="搜索和网页检索的默认思考档位；所有档位都使用配置中的搜索次数上限。",
         json_schema_extra={
             "label": "默认搜索档位", "x-widget": "select",
             "hint": "所有档位都不超过每轮次数和思考深度上限，不会自动开启已关闭的思考。",
@@ -547,11 +547,10 @@ def _search_budget(config: DeepSeekAnthropicProviderConfig, depth: str) -> tuple
     selected = depth or config.search.default_depth
     if not isinstance(selected, str) or selected not in SEARCH_DEPTH_LABELS:
         raise DeepSeekRequestError("搜索档位只能是 quick、standard 或 deep。", code="invalid_input")
-    max_uses = {"quick": 2, "standard": 3, "deep": config.search.max_search_uses}[selected]
     effort_cap = {"quick": EFFORT_LOW, "standard": EFFORT_HIGH, "deep": EFFORT_MAX}[selected]
     efforts = [EFFORT_LOW, EFFORT_HIGH, EFFORT_MAX]
     effort = efforts[min(efforts.index(config.thinking.thinking_effort), efforts.index(effort_cap))]
-    return _build_web_search_tools(config, max_uses=max_uses), effort
+    return _build_web_search_tools(config), effort
 
 
 def _search_scope_prompt(scope: dict[str, str] | None) -> str:
@@ -945,6 +944,16 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
             request_body["system"] = effective_system
         if tools:
             request_body["tools"] = copy.deepcopy(tools)
+            for tool in tools:
+                if str(tool.get("name", "")) == "web_search":
+                    limit = tool.get("max_uses", self.config.search.max_search_uses)
+                    request_body["system"] = (
+                        f"{effective_system}\n【本次搜索预算】最多允许 {limit} 次网页搜索。"
+                        "已有足够证据时立即停止；不要为了用满次数而补搜。"
+                        "达到上限后使用已经取得的可靠结果总结，并说明尚未核实的部分；"
+                        "不要把搜索次数用完误称为所有搜索都失败。"
+                    ).strip()
+                    break
 
         # 只合并已知会话内、有效参数完全一致的在途请求；不保留完成的答案。
         key = ""
@@ -993,6 +1002,13 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
                         # 动态时间放在用户输入末尾，并在出队后生成，保留固定提示前缀。
                         request_body["messages"][0]["content"] += "\n\n" + _build_search_time_context()
                     client = self._get_client(api_key, timeout)
+                    if _has_web_search_tool(request_body.get("tools")):
+                        self.ctx.logger.info(
+                            "DeepSeek 搜索预算: 配置上限=%s 本次上限=%s",
+                            self.config.search.max_search_uses,
+                            [tool.get("max_uses") for tool in request_body["tools"]
+                             if tool.get("name") == "web_search"],
+                        )
                     response = await client.messages.create(**request_body)
                     return self._parse_response(response, require_web_search, required_source_url)
         except DeepSeekRequestError:
@@ -1053,19 +1069,29 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
             )
 
         final_text = "\n\n".join(text_parts).strip()
+        # Reaching the limit on a later attempt does not invalidate earlier hits.
+        quota_only = bool(search_errors) and set(search_errors) == {"max_uses_exceeded"}
+        search_blocked = bool(search_errors) and not (quota_only and search_result_urls)
+        if search_result_urls or search_errors:
+            usage = _block_to_dict(getattr(response, "usage", {}))
+            server_usage = _block_to_dict(usage.get("server_tool_use", {}))
+            self.ctx.logger.info(
+                "DeepSeek 搜索结果: 上游请求次数=%s 有效来源=%s 错误=%s",
+                server_usage.get("web_search_requests"), len(search_result_urls), search_errors,
+            )
         source_matches = not required_source_url or any(
             _is_related_web_url(result_url, required_source_url) for result_url in search_result_urls
         )
         stop_reason = str(getattr(response, "stop_reason", "") or "")
         if stop_reason == "max_tokens":
-            verified = source_matches and not search_errors and (not require_web_search or bool(search_result_urls))
+            verified = source_matches and not search_blocked and (not require_web_search or bool(search_result_urls))
             raise DeepSeekRequestError(
                 "DeepSeek 输出达到最大长度，回答未完成；请调高“最大输出长度”或降低思考深度。",
                 code="truncated", partial_text=final_text if verified else "",
             )
         if stop_reason not in {"end_turn", "stop_sequence"}:
             raise DeepSeekRequestError("DeepSeek 未正常完成回答，请稍后重试。", code="incomplete")
-        if require_web_search and search_errors:
+        if require_web_search and search_blocked:
             raise DeepSeekRequestError(f"联网搜索失败：{_search_error_message(search_errors[0])}", code="search_failed")
         if require_web_search and not search_result_urls:
             self.ctx.logger.warning("DeepSeek Anthropic 未返回可用网页搜索结果")
@@ -1075,7 +1101,11 @@ class DeepSeekAnthropicProviderPlugin(MaiBotPlugin):
             raise DeepSeekRequestError(REQUIRED_SOURCE_URL_NOT_FOUND_MESSAGE, code="source_mismatch")
 
         if final_text:
+            if require_web_search and quota_only and search_result_urls:
+                return f"【搜索次数已用完，以下总结基于已取得的搜索结果，补充核验未完成】\n{final_text}"
             return final_text
+        if require_web_search and search_result_urls and quota_only:
+            raise DeepSeekRequestError("已取得搜索结果，但 DeepSeek 未返回总结，请重试。", code="empty_response")
         if search_errors:
             raise DeepSeekRequestError(f"联网搜索失败：{_search_error_message(search_errors[0])}", code="search_failed")
         raise DeepSeekRequestError("DeepSeek 未返回文本内容，请稍后重试。", code="empty_response")
