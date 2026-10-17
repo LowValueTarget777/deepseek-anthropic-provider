@@ -1,4 +1,4 @@
-# DeepSeek Anthropic Provider 插件开发限制
+# Deepseek联网工具插件开发限制
 
 你正在维护 `plugins/deepseek-anthropic-provider/` 这个 MaiBot 第三方插件。
 
@@ -19,16 +19,18 @@
 - 所有 WebUI 配置文案、日志和用户可见文本优先使用通俗简体中文。
 - 不要提交真实 API key、cookie、token、私有 URL 或本地路径。
 
-## DeepSeek Anthropic 约束
+## DeepSeek 联网接口约束
 
-- 插件只做管道：把 Bot 通过 Tool 传来的参数转为 Anthropic 请求发 DeepSeek，把结果还回去。不在插件里写爬虫、不调 requests、不 parse HTML。
-- DeepSeek Anthropic 兼容接口支持文本和 server web search；不要把图片或文档二进制直接发送。
-- 搜索来源默认只写日志，不主动附到聊天回复末尾。
-- 根据插件配置传递 `thinking.type` 与 `output_config.effort`；关闭思考时不传 `output_config`。
-- 搜索策略只控制插件内部 DeepSeek 使用 server web search 的倾向，不应描述为控制 MaiBot 主模型是否调用插件。
+- 根据用户的 0.3.0 迁移要求，搜索和抓取分别调用官方 /v1/tools/search 与 /v1/tools/fetch，使用 httpx；不再调用 Anthropic server web search 或额外对话模型。
+- 插件只转发检索参数与结构化结果，不写本地爬虫、不使用 requests、不解析 HTML；结果交给 MaiBot 主模型归纳。
+- 密钥只读复用本机 model_config.toml 中的官方 DeepSeek 供应商；不在插件设置保存密钥，不回退旧插件 key 或环境变量 key，不修改模型配置文件。
+- 当前 SDK 配置能力只公开 Bot 配置。供应商读取使用标准 TOML 解析器，支持普通安装自动发现和管理员指定只读路径，不导入 src.*。
+- 只向固定官方域名发送供应商密钥，不把第三方转发服务的 key 发给官方接口。
+- 搜索来源默认只写日志，不主动向聊天追加来源列表；Tool 返回中的 URL 用于主模型核验与继续抓取。
+- 保留已发布插件 ID 和仓库地址，显示名称为 Deepseek联网工具。
 
 参考文档：
 
-- <https://docs.mai-mai.org/develop/plugin-dev/vibe-coding>
-- <https://api-docs.deepseek.com/zh-cn/guides/anthropic_api>
-- <https://api-docs.deepseek.com/zh-cn/guides/thinking_mode>
+- <https://docs.mai-mai.org/plugin/vibe-coding>
+- <https://docs.mai-mai.org/plugin/api-reference>
+- <https://api-docs.deepseek.com/zh-cn/guides/search/>

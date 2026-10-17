@@ -1,85 +1,42 @@
-"""显式启用后调用真实 DeepSeek API 的集成测试。"""
+"""Explicit opt-in checks using the DeepSeek provider from MaiBot model settings."""
 
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
-import importlib.util
+import json
 import os
+
 import pytest
 
-
-PLUGIN_PATH = Path(__file__).resolve().parents[1] / "plugin.py"
-RUN_INTEGRATION = os.getenv("RUN_DEEPSEEK_INTEGRATION") == "1" and bool(os.getenv("DEEPSEEK_API_KEY"))
+from test_provider_behavior import make_plugin
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(
-        not RUN_INTEGRATION,
-        reason="仅同时设置 RUN_DEEPSEEK_INTEGRATION=1 和 DEEPSEEK_API_KEY 时调用真实 API",
-    ),
+    pytest.mark.skipif(os.getenv("RUN_DEEPSEEK_INTEGRATION") != "1", reason="真实 API 测试需显式启用，可能产生费用"),
 ]
 
 
 def make_live_plugin():
-    """创建使用环境变量密钥的真实调用插件。"""
-
-    spec = importlib.util.spec_from_file_location("deepseek_anthropic_provider_integration", PLUGIN_PATH)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    plugin = module.create_plugin()
-    config = plugin.get_default_config()
-    config["auth"]["api_key"] = ""
-    config["auth"]["api_key_env"] = "DEEPSEEK_API_KEY"
-    config["model"]["max_tokens"] = 1024
-    config["thinking"]["thinking_mode"] = "disabled"
-    config["search"]["max_search_uses"] = 1
-    plugin.set_plugin_config(config)
-    plugin._set_context(
-        SimpleNamespace(
-            logger=SimpleNamespace(
-                debug=MagicMock(),
-                info=MagicMock(),
-                warning=MagicMock(),
-                error=MagicMock(),
-            )
-        )
-    )
-    return module, plugin
+    overrides = {"debug": {"log_search_sources": False}}
+    path = os.getenv("DEEPSEEK_TEST_MODEL_CONFIG")
+    if path:
+        overrides["provider"] = {"model_config_path": path}
+    return make_plugin(overrides)
 
 
-async def test_live_ping() -> None:
-    """验证当前密钥、模型和 Anthropic 接口可用。"""
-
-    _module, plugin = make_live_plugin()
+async def test_live_search():
+    _, plugin = make_live_plugin()
     try:
-        result = await plugin._call_deepseek("请只回复 pong。", system="你是连通性测试助手。")
-        assert result.strip().lower().rstrip(".。!") == "pong"
+        result = await plugin.handle_search_and_summarize(query="DeepSeek site:deepseek.com", count=1)
+        assert result["success"], result["content"]
+        assert json.loads(result["content"])["results"]
     finally:
         await plugin.on_unload()
 
 
-async def test_live_single_search() -> None:
-    """验证当前账号支持配置中的 Web Search server tool。"""
-
-    module, plugin = make_live_plugin()
+async def test_live_fetch():
+    _, plugin = make_live_plugin()
     try:
-        with patch.object(plugin, "_parse_response", wraps=plugin._parse_response) as parse:
-            result = await plugin._call_deepseek(
-                "请联网搜索 DeepSeek 官方网站，并用一句话回答。",
-                system="你是搜索连通性测试助手。",
-                tools=module._build_web_search_tools(plugin.config, max_uses=1),
-                require_web_search=True,
-            )
-        assert result.strip()
-        response = parse.call_args.args[0]
-        assert response.stop_reason == "end_turn"
-        assert any(
-            module._extract_search_result_urls(module._block_to_dict(block))
-            for block in response.content
-        ), "必须有真实的网页搜索结果，错误提示或模型自行生成的链接不算成功"
+        result = await plugin.handle_fetch_page(url="https://example.com/")
+        assert result["success"], result["content"]
+        data = json.loads(result["content"])
+        assert data["content"].strip() and "Example" in data["title"]
     finally:
         await plugin.on_unload()
