@@ -1,35 +1,63 @@
-# DeepSeek Anthropic Provider 配置示例
-# 说明：MaiBot 运行时会按配置模型生成或维护本地 config.toml。
-# 本文件仅作参考；请勿把含真实 API Key 的 config.toml 提交进仓库。
+# Deepseek联网工具配置示例；运行时 config.toml 不提交到仓库。
+# 密钥只在 MaiBot 的模型供应商设置中维护。
 
 [plugin]
 enabled = true
-config_version = "0.2.5"
-max_concurrent_requests = 4
-coalesce_requests = true
+config_version = "0.3.0"
 
-[auth]
-# 推荐留空，并通过 DEEPSEEK_API_KEY 环境变量提供密钥。
-api_key = ""
-api_key_env = "DEEPSEEK_API_KEY"
-
-[model]
-model_choice = "deepseek-flash"
-max_tokens = 4096
-request_timeout_seconds = 120.0
-
-[thinking]
-thinking_mode = "enabled"
-thinking_effort = "high"
+[provider]
+# 兼容旧部署的内部选项，不显示在 WebUI；正常使用无需填写。
+# 多个官方供应商时，优先使用 MaiBot 中名为 DeepSeek 的供应商。
+provider_name = ""
+# 通常留空，特殊部署可指定模型配置文件；只读，不修改。
+model_config_path = ""
 
 [search]
 enabled = true
-web_search_tool = "web_search_20260209"
-max_search_uses = 5
-search_policy = "balanced"
-default_depth = "standard"
+count = 50
+need_content = false
+send_original_question = true
+# IP 地址，不填地区名称；留空不指定本地化。
+localization = ""
+# 每项一个域名、词语或语言代码；留空不额外限制。
+allowed_sites = []
+blocked_sites = []
+excluded_terms = []
+exact_phrases = []
+languages = []
+# YYYY 或 YYYY-MM-DD；固定日期优先于最新消息，查询显式日期优先于固定日期。
+published_after = ""
+published_before = ""
+max_result_chars = 4000
+# 开启后追加近期发布日期过滤；显式 after:/before: 条件优先。
+latest_news_enabled = false
+latest_news_days = 7
+# 默认不做质量过滤，防止漏掉低分但相关的资料。
+min_rerank_score = 0.0
+min_authority = -1
+sort_by = "综合相关性"
+deduplicate = true
+# 长摘要优先，缺失时回退短摘要；也可选“短摘要优先”或“长短摘要都返回”。
+summary_mode = "长摘要优先"
+include_date = true
+include_rerank_score = true
+include_authority = true
+include_site_name = true
+include_site_icon = false
+# 文本共享预算，不含 URL 与元数据；超出明确标记，所有链接仍保留。
+max_total_text_chars = 60000
+
+[fetch]
+enabled = true
+max_content_chars = 30000
+
+[runtime]
+request_timeout_seconds = 120.0
+max_concurrent_requests = 4
+requests_per_second = 4
+coalesce_requests = true
 
 [debug]
 log_search_sources = true
-log_raw_summary = false
+log_request_summary = false
 enable_test_commands = true

@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "LowValueTarget.deepseek-anthropic-provider",
-  "version": "0.2.5",
-  "name": "DeepSeek Anthropic Provider",
-  "description": "将 DeepSeek Anthropic API 包装为 MaiBot Tool，让 Bot 可以按需调用联网搜索、网页读取和深度推理能力。",
+  "version": "0.3.0",
+  "name": "Deepseek联网工具",
+  "description": "通过 DeepSeek 官方 Search 与 Fetch API 搜索网页、抓取 Markdown 正文，复用 MaiBot 模型供应商中的 DeepSeek 密钥。",
   "author": {
     "name": "LowValueTarget",
     "url": "https://github.com/LowValueTarget777"
@@ -26,8 +26,8 @@
   "dependencies": [
     {
       "type": "python_package",
-      "name": "anthropic",
-      "version_spec": ">=0.104.0,<1.0.0"
+      "name": "httpx",
+      "version_spec": ">=0.28.1,<1.0.0"
     },
     {
       "type": "python_package",
